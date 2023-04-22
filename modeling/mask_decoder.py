@@ -24,22 +24,7 @@ class MaskDecoder(nn.Module):
         iou_head_depth: int = 3,
         iou_head_hidden_dim: int = 256,
     ) -> None:
-        """
-        Predicts masks given an image and prompt embeddings, using a
-        transformer architecture.
 
-        Arguments:
-          transformer_dim (int): the channel dimension of the transformer
-          transformer (nn.Module): the transformer used to predict masks
-          num_multimask_outputs (int): the number of masks to predict
-            when disambiguating masks
-          activation (nn.Module): the type of activation to use when
-            upscaling masks
-          iou_head_depth (int): the depth of the MLP used to predict
-            mask quality
-          iou_head_hidden_dim (int): the hidden dimension of the MLP
-            used to predict mask quality
-        """
         super().__init__()
         self.transformer_dim = transformer_dim
         self.transformer = transformer
@@ -72,32 +57,14 @@ class MaskDecoder(nn.Module):
         self,
         image_embeddings: torch.Tensor,
         image_pe: torch.Tensor,
-        # sparse_prompt_embeddings: torch.Tensor, 
-        # dense_prompt_embeddings: torch.Tensor,
-        text_prompt_embeddings: torch.Tensor,
+        prompt_embeddings: torch.Tensor,
         multimask_output: bool,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
-        """
-        Predict masks given image and prompt embeddings.
 
-        Arguments:
-          image_embeddings (torch.Tensor): the embeddings from the image encoder
-          image_pe (torch.Tensor): positional encoding with the shape of image_embeddings
-          sparse_prompt_embeddings (torch.Tensor): the embeddings of the points and boxes
-          dense_prompt_embeddings (torch.Tensor): the embeddings of the mask inputs
-          multimask_output (bool): Whether to return multiple masks or a single
-            mask.
-
-        Returns:
-          torch.Tensor: batched predicted masks
-          torch.Tensor: batched predictions of mask quality
-        """
         masks, iou_pred = self.predict_masks(
             image_embeddings=image_embeddings,
             image_pe=image_pe,
-            # sparse_prompt_embeddings=sparse_prompt_embeddings,
-            # dense_prompt_embeddings=dense_prompt_embeddings,
-            text_prompt_embeddings=text_prompt_embeddings,
+            prompt_embeddings=prompt_embeddings,
         )
 
         # Select the correct mask or masks for output
@@ -113,23 +80,19 @@ class MaskDecoder(nn.Module):
 
     def predict_masks(
         self,
-        image_embeddings: torch.Tensor,
-        image_pe: torch.Tensor,
-        # sparse_prompt_embeddings: torch.Tensor,
-        # dense_prompt_embeddings: torch.Tensor,
-        text_prompt_embeddings: torch.Tensor,
+        image_embeddings: torch.Tensor, # B x C x H x W
+        image_pe: torch.Tensor, # 1 x C x H x W
+        prompt_embeddings: torch.Tensor, # B x 1 x S 
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """Predicts masks. See 'forward' for more details."""
         # Concatenate output tokens
         output_tokens = torch.cat([self.iou_token.weight, self.mask_tokens.weight], dim=0)
-        # output_tokens = output_tokens.unsqueeze(0).expand(sparse_prompt_embeddings.size(0), -1, -1)
-        # tokens = torch.cat((output_tokens, sparse_prompt_embeddings), dim=1)
-        output_tokens = output_tokens.unsqueeze(0).expand(text_prompt_embeddings.size(0), -1, -1)
-        tokens = torch.cat((output_tokens, text_prompt_embeddings), dim=1)
+        output_tokens = output_tokens.unsqueeze(0).expand(prompt_embeddings.size(0), -1, -1)
+        tokens = torch.cat((output_tokens, prompt_embeddings), dim=1)
 
         # Expand per-image data in batch direction to be per-mask
-        src = torch.repeat_interleave(image_embeddings, tokens.shape[0], dim=0)
-        # src = src + dense_prompt_embeddings
+        # src = torch.repeat_interleave(image_embeddings, tokens.shape[0], dim=0)
+        src = image_embeddings
         pos_src = torch.repeat_interleave(image_pe, tokens.shape[0], dim=0)
         b, c, h, w = src.shape
 
