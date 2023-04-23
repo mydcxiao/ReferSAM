@@ -18,8 +18,8 @@ class PromptEncoder(nn.Module):
     def __init__(
         self,
         embed_dim: int = 256,
-        # model_name: str,
-        # pretrained: str,
+        model_name: str,
+        pretrained: str,
         input_dim: int = 768,
         depth: int = 3,
         image_embedding_size: Tuple[int, int],
@@ -30,22 +30,22 @@ class PromptEncoder(nn.Module):
         # self.act = activation()
         # self.lin = nn.Linear(input_dim, embed_dim)
         self.pe_layer = PositionEmbeddingRandom(embed_dim // 2)
-
+        self.model, _, _ = open_clip.create_model_and_transforms(model_name, pretrained=pretrained)
         self.layer = MLP(
             input_dim, input_dim, self.embed_dim, depth
         )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        
+        x = encode_text(x)
         return self.layer(x)
     
-    # @torch.no_grad()
-    # @torch.cuda.amp.autocast()
-    # def encode_text(self, x: torch.Tensor):
-    #     self.model, _, _ = open_clip.create_model_and_transforms(model_name, pretrained=pretrained)
-    #     text_features = self.model.encode_text(x)
-    #     text_features /= text_features.norm(dim=-1, keepdim=True)
-    #     return text_features
+    @torch.no_grad()
+    @torch.cuda.amp.autocast()
+    def encode_text(self, x: torch.Tensor):
+        x = x.squeeze(1)
+        text_features = self.model.encode_text(x)
+        text_features /= text_features.norm(dim=-1, keepdim=True)
+        return text_features.unsqueeze(1)
 
     def get_dense_pe(self) -> torch.Tensor:
         """

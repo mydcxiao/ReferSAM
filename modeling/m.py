@@ -34,19 +34,15 @@ class m(nn.Module):
     # def device(self) -> Any:
     #     return self.pixel_mean.device
 
-    # @torch.no_grad()
     def forward(
         self,
         batched_images, # B x C x H x W
-        batched_sents, # B x D
+        batched_sents, # B x 1 x D
         multimask_output: bool,
     ) -> List[Dict[str, torch.Tensor]]:
         image_embeddings = self.image_encoder(batched_images)
 
-        # outputs = []
-        # for image_record, curr_embedding in zip(batched_input, image_embeddings):
         text_embeddings = self.prompt_encoder(
-            # image_record.get("text_feature", None),
             batched_sents,
         )
         low_res_masks, iou_predictions = self.mask_decoder(
@@ -62,12 +58,35 @@ class m(nn.Module):
         #     original_size=image_record["original_size"],
         # )
         # masks = masks > self.mask_threshold
-        # outputs.append(
-        #     {
-        #         "masks": masks,
-        #         "iou_predictions": iou_predictions,
-        #         "low_res_logits": low_res_masks,
-        #     }
-        # )
-        # return outputs
         return low_res_masks, iou_predictions
+    
+    # def postprocess_masks(
+    #     self,
+    #     masks: torch.Tensor,
+    #     input_size: Tuple[int, ...],
+    #     original_size: Tuple[int, ...],
+    # ) -> torch.Tensor:
+    #     """
+    #     Remove padding and upscale masks to the original image size.
+
+    #     Arguments:
+    #       masks (torch.Tensor): Batched masks from the mask_decoder,
+    #         in BxCxHxW format.
+    #       input_size (tuple(int, int)): The size of the image input to the
+    #         model, in (H, W) format. Used to remove padding.
+    #       original_size (tuple(int, int)): The original size of the image
+    #         before resizing for input to the model, in (H, W) format.
+
+    #     Returns:
+    #       (torch.Tensor): Batched masks in BxCxHxW format, where (H, W)
+    #         is given by original_size.
+    #     """
+    #     masks = F.interpolate(
+    #         masks,
+    #         (self.image_encoder.img_size, self.image_encoder.img_size),
+    #         mode="bilinear",
+    #         align_corners=False,
+    #     )
+    #     masks = masks[..., : input_size[0], : input_size[1]]
+    #     masks = F.interpolate(masks, original_size, mode="bilinear", align_corners=False)
+    #     return masks
