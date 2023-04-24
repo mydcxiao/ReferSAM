@@ -12,16 +12,16 @@ from typing import Any, Optional, Tuple, Type
 
 # from .common import LayerNorm2d
 
-# import open_clip
+import open_clip
 
 class PromptEncoder(nn.Module):
     def __init__(
         self,
-        embed_dim: int = 256,
+        embed_dim: int,
         model_name: str,
         pretrained: str,
-        input_dim: int = 768,
-        depth: int = 3,
+        input_dim: int,
+        depth: int,
         image_embedding_size: Tuple[int, int],
         # activation: Type[nn.Module] = nn.GELU,
     ) -> None:

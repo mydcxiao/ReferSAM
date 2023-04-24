@@ -8,7 +8,8 @@ import torch
 
 from functools import partial
 
-from .modeling import ImageEncoderViT, MaskDecoder, PromptEncoder, Sam, TwoWayTransformer
+# from .modeling import ImageEncoderViT, MaskDecoder, PromptEncoder, M, TwoWayTransformer
+from modeling import ImageEncoderViT, MaskDecoder, PromptEncoder, M, TwoWayTransformer
 
 
 def build_sam_vit_h(checkpoint=None):
@@ -63,7 +64,7 @@ def _build_sam(
     image_size = 1024
     vit_patch_size = 16
     image_embedding_size = image_size // vit_patch_size
-    sam = Sam(
+    m = M(
         image_encoder=ImageEncoderViT(
             depth=encoder_depth,
             embed_dim=encoder_embed_dim,
@@ -80,16 +81,16 @@ def _build_sam(
         ),
         prompt_encoder=PromptEncoder(
             embed_dim=prompt_embed_dim,
+            model_name='ViT-L-14-336',
+            pretrained='openai',
+            input_dim=768,
+            depth=3,
             image_embedding_size=(image_embedding_size, image_embedding_size),
-            # input_image_size=(image_size, image_size),
-            # mask_in_chans=16,
-            feature_dim=768,
-            # feature_dim=feature_dim,
         ),
         mask_decoder=MaskDecoder(
             num_multimask_outputs=3,
             transformer=TwoWayTransformer(
-                depth=3,
+                depth=2,
                 embedding_dim=prompt_embed_dim,
                 mlp_dim=2048,
                 num_heads=8,
@@ -98,12 +99,16 @@ def _build_sam(
             iou_head_depth=3,
             iou_head_hidden_dim=256,
         ),
-        pixel_mean=[123.675, 116.28, 103.53],
-        pixel_std=[58.395, 57.12, 57.375],
     )
     # sam.eval()
     if checkpoint is not None:
         with open(checkpoint, "rb") as f:
             state_dict = torch.load(f)
-        sam.load_state_dict(state_dict)
-    return sam
+        m.load_state_dict(state_dict)
+    return m
+
+
+# model = build_sam_vit_h()
+# for name, param in model.named_parameters():
+#     print(name)
+

@@ -15,7 +15,7 @@ from .mask_decoder import MaskDecoder
 from .prompt_encoder import PromptEncoder
 
 
-class m(nn.Module):
+class M(nn.Module):
     mask_threshold: float = 0.0
     image_format: str = "RGB"
 
