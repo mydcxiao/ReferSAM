@@ -11,7 +11,6 @@ import operator
 # from bert.modeling_bert import BertModel
 
 import torchvision
-# from lib import segmentation
 
 from utils import transforms as T
 from utils import utils
@@ -23,108 +22,31 @@ import gc
 from collections import OrderedDict
 
 
-def get_dataset(image_set, transform, args):
-    from data.dataset_refer_bert import ReferDataset
+def get_dataset(image_set, image_transforms, target_transforms, args):
+    from res_dataloader import ReferDataset
     ds = ReferDataset(args,
                       split=image_set,
-                      image_transforms=transform,
-                      target_transforms=None
+                      image_transforms=image_transforms,
+                      target_transforms=target_transforms,
                       )
-    num_classes = 2
-
-    return ds, num_classes
-
-
-# IoU calculation for validation
-def IoU(pred, gt):
-    pred = pred.argmax(1)
-
-    intersection = torch.sum(torch.mul(pred, gt))
-    union = torch.sum(torch.add(pred, gt)) - intersection
-
-    if intersection == 0 or union == 0:
-        iou = 0
-    else:
-        iou = float(intersection) / float(union)
-
-    return iou, intersection, union
-
+    return ds
 
 def get_transform(args):
-    transforms = [T.Resize(args.img_size, args.img_size),
-                  T.ToTensor(),
-                  T.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
-                  ]
-
-    return T.Compose(transforms)
-
-
-def criterion(input, target):
-    weight = torch.FloatTensor([0.9, 1.1]).cuda()
-    return nn.functional.cross_entropy(input, target, weight=weight)
-
-
-def evaluate(model, data_loader, bert_model):
-    model.eval()
-    metric_logger = utils.MetricLogger(delimiter="  ")
-    header = 'Test:'
-    total_its = 0
-    acc_ious = 0
-
-    # evaluation variables
-    cum_I, cum_U = 0, 0
-    eval_seg_iou_list = [.5, .6, .7, .8, .9]
-    seg_correct = np.zeros(len(eval_seg_iou_list), dtype=np.int32)
-    seg_total = 0
-    mean_IoU = []
-
-    with torch.no_grad():
-        for data in metric_logger.log_every(data_loader, 100, header):
-            total_its += 1
-            image, target, sentences, attentions = data
-            image, target, sentences, attentions = image.cuda(non_blocking=True),\
-                                                   target.cuda(non_blocking=True),\
-                                                   sentences.cuda(non_blocking=True),\
-                                                   attentions.cuda(non_blocking=True)
-
-            sentences = sentences.squeeze(1)
-            attentions = attentions.squeeze(1)
-
-            if bert_model is not None:
-                last_hidden_states = bert_model(sentences, attention_mask=attentions)[0]
-                embedding = last_hidden_states.permute(0, 2, 1)  # (B, 768, N_l) to make Conv1d happy
-                attentions = attentions.unsqueeze(dim=-1)  # (B, N_l, 1)
-                output = model(image, embedding, l_mask=attentions)
-            else:
-                output = model(image, sentences, l_mask=attentions)
-
-            iou, I, U = IoU(output, target)
-            acc_ious += iou
-            mean_IoU.append(iou)
-            cum_I += I
-            cum_U += U
-            for n_eval_iou in range(len(eval_seg_iou_list)):
-                eval_seg_iou = eval_seg_iou_list[n_eval_iou]
-                seg_correct[n_eval_iou] += (iou >= eval_seg_iou)
-            seg_total += 1
-        iou = acc_ious / total_its
-
-    mean_IoU = np.array(mean_IoU)
-    mIoU = np.mean(mean_IoU)
-    print('Final results:')
-    print('Mean IoU is %.2f\n' % (mIoU * 100.))
-    results_str = ''
-    for n_eval_iou in range(len(eval_seg_iou_list)):
-        results_str += '    precision@%s = %.2f\n' % \
-                       (str(eval_seg_iou_list[n_eval_iou]), seg_correct[n_eval_iou] * 100. / seg_total)
-    results_str += '    overall IoU = %.2f\n' % (cum_I * 100. / cum_U)
-    print(results_str)
-
-    return 100 * iou, 100 * cum_I / cum_U
+    image_transforms = [T.ResizeLongestSide(args.img_size),
+                        T.Normalize(),
+                        T.ToTensor(),
+                        T.Pad(args.img_size)
+                        ]
+    target_transforms = [T.ResizeLongestSide(args.img_size),
+                         T.ToTensor(),
+                         T.Pad(args.img_size)
+                         ]
+    
+    return T.Compose(image_transforms), T.Compose(target_transforms)
 
 
 def train_one_epoch(model, criterion, optimizer, data_loader, lr_scheduler, epoch, print_freq,
-                    iterations, bert_model):
+                    iterations):
     model.train()
     metric_logger = utils.MetricLogger(delimiter="  ")
     metric_logger.add_meter('lr', utils.SmoothedValue(window_size=1, fmt='{value}'))
@@ -134,24 +56,15 @@ def train_one_epoch(model, criterion, optimizer, data_loader, lr_scheduler, epoc
 
     for data in metric_logger.log_every(data_loader, print_freq, header):
         total_its += 1
-        image, target, sentences, attentions = data
-        image, target, sentences, attentions = image.cuda(non_blocking=True),\
+        image, target, sentences = data
+        image, target, sentences = image.cuda(non_blocking=True),\
                                                target.cuda(non_blocking=True),\
                                                sentences.cuda(non_blocking=True),\
                                                attentions.cuda(non_blocking=True)
 
-        sentences = sentences.squeeze(1)
-        attentions = attentions.squeeze(1)
+        mask, iou_pred = model(image, sentences)
 
-        if bert_model is not None:
-            last_hidden_states = bert_model(sentences, attention_mask=attentions)[0]  # (6, 10, 768)
-            embedding = last_hidden_states.permute(0, 2, 1)  # (B, 768, N_l) to make Conv1d happy
-            attentions = attentions.unsqueeze(dim=-1)  # (batch, N_l, 1)
-            output = model(image, embedding, l_mask=attentions)
-        else:
-            output = model(image, sentences, l_mask=attentions)
-
-        loss = criterion(output, target)
+        loss = criterion(output, target) # TODO need to be designed
         optimizer.zero_grad()  # set_to_none=True is only available in pytorch 1.6+
         loss.backward()
         optimizer.step()
@@ -162,9 +75,7 @@ def train_one_epoch(model, criterion, optimizer, data_loader, lr_scheduler, epoc
         iterations += 1
         metric_logger.update(loss=loss.item(), lr=optimizer.param_groups[0]["lr"])
 
-        del image, target, sentences, attentions, loss, output, data
-        if bert_model is not None:
-            del last_hidden_states, embedding
+        del image, target, sentences, loss, mask, iou_pred, data
 
         gc.collect()
         torch.cuda.empty_cache()

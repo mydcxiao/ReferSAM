@@ -58,6 +58,7 @@ class M(nn.Module):
         #     original_size=image_record["original_size"],
         # )
         # masks = masks > self.mask_threshold
+        # low_res_masks = low_res_masks > self.mask_threshold
         return low_res_masks, iou_predictions
     
     # def postprocess_masks(

@@ -72,8 +72,8 @@ class MaskDecoder(nn.Module):
             mask_slice = slice(1, None)
         else:
             mask_slice = slice(0, 1)
-        masks = masks[:, mask_slice, :, :]
-        iou_pred = iou_pred[:, mask_slice]
+        masks = masks[:, mask_slice, :, :] # b x 3 x h x w
+        iou_pred = iou_pred[:, mask_slice] # b x 1 x 3
 
         # Prepare output
         return masks, iou_pred
