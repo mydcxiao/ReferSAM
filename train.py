@@ -21,6 +21,9 @@ import torch.nn.functional as F
 import gc
 from collections import OrderedDict
 
+import Criterion
+from engine import train_one_epoch, eval_batch
+
 
 def get_dataset(image_set, image_transforms, target_transforms, args):
     from res_dataloader import ReferDataset
@@ -45,50 +48,17 @@ def get_transform(args):
     return T.Compose(image_transforms), T.Compose(target_transforms)
 
 
-def train_one_epoch(model, criterion, optimizer, data_loader, lr_scheduler, epoch, print_freq,
-                    iterations):
-    model.train()
-    metric_logger = utils.MetricLogger(delimiter="  ")
-    metric_logger.add_meter('lr', utils.SmoothedValue(window_size=1, fmt='{value}'))
-    header = 'Epoch: [{}]'.format(epoch)
-    train_loss = 0
-    total_its = 0
-
-    for data in metric_logger.log_every(data_loader, print_freq, header):
-        total_its += 1
-        image, target, sentences = data
-        image, target, sentences = image.cuda(non_blocking=True),\
-                                               target.cuda(non_blocking=True),\
-                                               sentences.cuda(non_blocking=True),\
-                                               attentions.cuda(non_blocking=True)
-
-        mask, iou_pred = model(image, sentences)
-
-        loss = criterion(output, target) # TODO need to be designed
-        optimizer.zero_grad()  # set_to_none=True is only available in pytorch 1.6+
-        loss.backward()
-        optimizer.step()
-        lr_scheduler.step()
-
-        torch.cuda.synchronize()
-        train_loss += loss.item()
-        iterations += 1
-        metric_logger.update(loss=loss.item(), lr=optimizer.param_groups[0]["lr"])
-
-        del image, target, sentences, loss, mask, iou_pred, data
-
-        gc.collect()
-        torch.cuda.empty_cache()
-        torch.cuda.synchronize()
-
-
 def main(args):
-    dataset, num_classes = get_dataset("train",
-                                       get_transform(args=args),
-                                       args=args)
-    dataset_test, _ = get_dataset("val",
-                                  get_transform(args=args),
-                                  args=args)
+    image_transforms, target_transforms = get_transform(args)
+
+    dataset = get_dataset("train",
+                          image_transforms=image_transforms,
+                          target_transforms=target_transforms,
+                          args=args)
+    dataset_test = get_dataset("val",
+                               image_transforms=image_transforms,
+                               target_transforms=target_transforms,
+                               args=args)
 
     # batch sampler
     print(f"local rank {args.local_rank} / global rank {utils.get_rank()} successfully built train dataset.")
@@ -106,7 +76,7 @@ def main(args):
     data_loader_test = torch.utils.data.DataLoader(
         dataset_test, batch_size=1, sampler=test_sampler, num_workers=args.workers)
 
-    # model initialization
+    # TODO model initialization
     print(args.model)
     model = segmentation.__dict__[args.model](pretrained=args.pretrained_swin_weights,
                                               args=args)

@@ -95,7 +95,7 @@ class ReferDataset(data.Dataset):
             target = self.target_transforms(target)
         
         if self.eval_mode:
-            # need modify in the future--dimensionality problem
+            # TODO need modify in the future--dimensionality problem
             embedding = []
             for s in range(len(self.input_ids[index])):
                 e = self.input_ids[index][s]
@@ -112,19 +112,19 @@ class ReferDataset(data.Dataset):
 # import torch.distributed as dist
 # import torch.backends.cudnn as cudnn
 
-# def get_transform(args):
-#     from utils import transforms as T
-#     image_transforms = [T.ResizeLongestSide(args.img_size),
-#                          T.Normalize(),
-#                          T.ToTensor(),
-#                          T.Pad(args.img_size)
-#                         ]
-#     target_transforms = [T.ResizeLongestSide(args.img_size),
-#                          T.ToTensor(),
-#                          T.Pad(args.img_size)
-#                         ]
+def get_transform(args):
+    from utils import transforms as T
+    image_transforms = [T.ResizeLongestSide(args.img_size),
+                         T.Normalize(),
+                         T.ToTensor(),
+                         T.Pad(args.img_size)
+                        ]
+    target_transforms = [T.ResizeLongestSide(args.img_size),
+                         T.ToTensor(),
+                         T.Pad(args.img_size)
+                        ]
     
-#     return T.Compose(image_transforms), T.Compose(target_transforms)
+    return T.Compose(image_transforms), T.Compose(target_transforms)
 
 # from utils import utils
 # utils.init_distributed_mode(args)
@@ -134,7 +134,9 @@ class ReferDataset(data.Dataset):
 # ds = ReferDataset(args,
 #                   split='val',
 #                   image_transforms=image_transforms,
-#                   target_transforms=target_transforms
+#                   target_transforms=target_transforms,
+#                 #   eval_mode=False,
+#                   eval_mode = True,
 #                  )
 
 # num_tasks = utils.get_world_size()
@@ -144,6 +146,12 @@ class ReferDataset(data.Dataset):
 # data_loader = torch.utils.data.DataLoader(
 #         ds, batch_size=args.batch_size,
 #         sampler=train_sampler, num_workers=args.workers, pin_memory=args.pin_mem, drop_last=True)  
+
+
+# test_sampler = torch.utils.data.SequentialSampler(ds)
+# data_loader = torch.utils.data.DataLoader(ds, batch_size=1,
+#                                                 sampler=test_sampler, num_workers=args.workers)
+
 
 # print(next(iter(data_loader))[0].size()) 
 # print(next(iter(data_loader))[1].size()) 
