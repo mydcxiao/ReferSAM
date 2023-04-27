@@ -7,10 +7,12 @@ def get_parser():
         )
     )
     parser.add_argument('-b', '--batch-size', default=8, type=int)
+    parser.add_argument('--checkpoint', default=None, help='path to checkpoint')
     parser.add_argument('--dataset', default='refcoco', help='refcoco, refcoco+, or refcocog')
     parser.add_argument('--device', default='cuda:0', help='device')  # only used when testing on a single machine
     parser.add_argument('--img_size', default=480, type=int, help='input image size')
     parser.add_argument("--local_rank", type=int, help='local rank for DistributedDataParallel')
+    parser.add_argument('--model', default='default', help='model: vit_h, vit_l, vit_b')
     parser.add_argument('--pin_mem', action='store_true',
                         help='If true, pin memory when using the data loader.')
     parser.add_argument('--refer_data_root', default='./refer/data/', help='REFER dataset root directory')

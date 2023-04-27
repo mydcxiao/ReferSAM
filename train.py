@@ -23,6 +23,7 @@ from collections import OrderedDict
 
 import Criterion
 from engine import train_one_epoch, eval_batch
+from build_m import sam_model_registry
 
 
 def get_dataset(image_set, image_transforms, target_transforms, args):
@@ -76,35 +77,24 @@ def main(args):
     data_loader_test = torch.utils.data.DataLoader(
         dataset_test, batch_size=1, sampler=test_sampler, num_workers=args.workers)
 
-    # TODO model initialization
+    # model initialization
     print(args.model)
-    model = segmentation.__dict__[args.model](pretrained=args.pretrained_swin_weights,
-                                              args=args)
+    model = sam_model_registry[args.model](checkpoint=args.checkpoint)
     model = torch.nn.SyncBatchNorm.convert_sync_batchnorm(model)
     model.cuda()
     model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[args.local_rank], find_unused_parameters=True)
     single_model = model.module
 
-    if args.model != 'lavt_one':
-        model_class = BertModel
-        bert_model = model_class.from_pretrained(args.ck_bert)
-        bert_model.pooler = None  # a work-around for a bug in Transformers = 3.0.2 that appears for DistributedDataParallel
-        bert_model.cuda()
-        bert_model = torch.nn.SyncBatchNorm.convert_sync_batchnorm(bert_model)
-        bert_model = torch.nn.parallel.DistributedDataParallel(bert_model, device_ids=[args.local_rank])
-        single_bert_model = bert_model.module
-    else:
-        bert_model = None
-        single_bert_model = None
+    # TODO move language model here
+    # model_class = BertModel
+    # bert_model = model_class.from_pretrained(args.ck_bert)
+    # bert_model.pooler = None  # a work-around for a bug in Transformers = 3.0.2 that appears for DistributedDataParallel
+    # bert_model.cuda()
+    # bert_model = torch.nn.SyncBatchNorm.convert_sync_batchnorm(bert_model)
+    # bert_model = torch.nn.parallel.DistributedDataParallel(bert_model, device_ids=[args.local_rank])
+    # single_bert_model = bert_model.module
 
-    # resume training
-    if args.resume:
-        checkpoint = torch.load(args.resume, map_location='cpu')
-        single_model.load_state_dict(checkpoint['model'])
-        if args.model != 'lavt_one':
-            single_bert_model.load_state_dict(checkpoint['bert_model'])
-
-    # parameters to optimize
+    # TODO parameters to optimize
     backbone_no_decay = list()
     backbone_decay = list()
     for name, m in single_model.backbone.named_parameters():
