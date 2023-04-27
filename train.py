@@ -85,7 +85,7 @@ def main(args):
     model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[args.local_rank], find_unused_parameters=True)
     single_model = model.module
 
-    # TODO move language model here
+    # TODO maybe move language model here
     # model_class = BertModel
     # bert_model = model_class.from_pretrained(args.ck_bert)
     # bert_model.pooler = None  # a work-around for a bug in Transformers = 3.0.2 that appears for DistributedDataParallel
