@@ -30,7 +30,7 @@ class PromptEncoder(nn.Module):
         # self.act = activation()
         # self.lin = nn.Linear(input_dim, embed_dim)
         self.pe_layer = PositionEmbeddingRandom(embed_dim // 2)
-        self.model, _, _ = open_clip.create_model_and_transforms(model_name, pretrained=pretrained)
+        self.text_model, _, _ = open_clip.create_model_and_transforms(model_name, pretrained=pretrained)
         self.layer = MLP(
             input_dim, input_dim, self.embed_dim, depth
         )
@@ -39,13 +39,21 @@ class PromptEncoder(nn.Module):
         x = encode_text(x)
         return self.layer(x)
     
-    @torch.no_grad()
     @torch.cuda.amp.autocast()
     def encode_text(self, x: torch.Tensor):
         x = x.squeeze(1)
-        text_features = self.model.encode_text(x)
-        text_features /= text_features.norm(dim=-1, keepdim=True)
-        return text_features.unsqueeze(1)
+        x = self.text_model.token_embedding(x)  # [batch_size, n_ctx, d_model]
+        x = x + self.text_model.positional_embedding
+        x = x.permute(1, 0, 2)  # NLD -> LND
+        x = self.text_model.transformer(x, attn_mask self.text_model.attn_mask)
+        x = x.permute(1, 0, 2)  # LND -> NLD
+        x = self.text_model.ln_final(x)
+        text_encodings = x
+        text_embed = x[torch.arange(x.shape[0]), text.argmax(dim=-1)] @ self.text_model.text_projection
+        text_embed /= text_embed.norm(dim=-1, keepdim=True)
+        text_embed = text_embed.unsqueeze(1)
+        text_features = torch.cat((text_embed, text_encodings), dim=1)
+        return text_features
 
     def get_dense_pe(self) -> torch.Tensor:
         """
@@ -132,3 +140,8 @@ class MLP(nn.Module):
         if self.sigmoid_output:
             x = F.sigmoid(x)
         return x
+
+# c = PositionEmbeddingRandom(128)
+# for params in c.parameters():
+#     print(params.size())
+# print(len(list(c.parameters())))

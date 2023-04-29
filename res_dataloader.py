@@ -46,7 +46,7 @@ class ReferDataset(data.Dataset):
         self.ref_ids = ref_ids
 
         self.input_ids = []
-        self.tokenizer = open_clip.get_tokenizer('ViT-L-14-336')
+        self.tokenizer = open_clip.tokenize
         # produce 768-d features
         # model, _, _ = open_clip.create_model_and_transforms('ViT-L-14-336', pretrained='openai')
 

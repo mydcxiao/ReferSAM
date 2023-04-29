@@ -104,6 +104,10 @@ def _build_sam(
     if checkpoint is not None:
         with open(checkpoint, "rb") as f:
             state_dict = torch.load(f)
+        # keys = list(state_dict.keys())
+        # for k in keys:
+        #     if 'prompt_encoder' in k:
+        #         state_dict.pop(k)
         m.load_state_dict(state_dict)
     return m
 
@@ -111,4 +115,7 @@ def _build_sam(
 # model = build_sam_vit_h()
 # for name, param in model.named_parameters():
 #     print(name)
+
+# model = build_sam_vit_h(checkpoint='checkpoints/sam_vit_h_4b8939.pth')
+
 

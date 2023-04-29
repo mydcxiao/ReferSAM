@@ -36,6 +36,11 @@ def IoU(pred_seg, gd_seg):
 def train_one_epoch(model, criterion, optimizer, data_loader, lr_scheduler, epoch, print_freq,
                     iterations):
     model.train()
+    model.image_encoder.eval()
+    model.image_encoder.requires_grad_(False)
+    model.prompt_encoder.text_model.eval()
+    model.prompt_encoder.text_model.requires_grad_(False)
+    criterion.train()
     metric_logger = utils.MetricLogger(delimiter="  ")
     metric_logger.add_meter('lr', utils.SmoothedValue(window_size=1, fmt='{value}'))
     header = 'Epoch: [{}]'.format(epoch)
