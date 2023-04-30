@@ -36,10 +36,10 @@ def IoU(pred_seg, gd_seg):
 def train_one_epoch(model, criterion, optimizer, data_loader, lr_scheduler, epoch, print_freq,
                     iterations):
     model.train()
-    model.image_encoder.eval()
-    model.image_encoder.requires_grad_(False)
-    model.prompt_encoder.text_model.eval()
-    model.prompt_encoder.text_model.requires_grad_(False)
+    model.module.image_encoder.eval()
+    model.module.image_encoder.requires_grad_(False)
+    model.module.prompt_encoder.text_model.eval()
+    model.module.prompt_encoder.text_model.requires_grad_(False)
     criterion.train()
     metric_logger = utils.MetricLogger(delimiter="  ")
     metric_logger.add_meter('lr', utils.SmoothedValue(window_size=1, fmt='{value}'))
@@ -49,17 +49,19 @@ def train_one_epoch(model, criterion, optimizer, data_loader, lr_scheduler, epoc
 
     for data in metric_logger.log_every(data_loader, print_freq, header):
         total_its += 1
-        image, target, sentences = data
-        image, target, sentences = image.cuda(non_blocking=True),\
-                                   target.cuda(non_blocking=True),\
-                                   sentences.cuda(non_blocking=True)#,\
-                                    #  attentions.cuda(non_blocking=True)
+        image, target, sentences, original_size, input_size = data
+        image, target, sentences, original_size, input_size = image.cuda(non_blocking=True),\
+                                                              target.cuda(non_blocking=True),\
+                                                              sentences.cuda(non_blocking=True),\
+                                                              original_size.cuda(non_blocking=True),\
+                                                              input_size.cuda(non_blocking=True)
+                                                            #   attentions.cuda(non_blocking=True)
 
-        mask, iou_pred = model(image, sentences)
+        mask, iou_pred = model(image, sentences, multimask_output=True)
 
         iou_gt, _, _ = computeIoU(mask, target) #TODO check
 
-        loss = criterion(mask, target, iou_pred, iou_gt) #TODO check
+        loss = criterion(mask.float(), target, iou_pred, iou_gt) #TODO check
 
         optimizer.zero_grad()  # set_to_none=True is only available in pytorch 1.6+
         loss.backward()
@@ -71,7 +73,7 @@ def train_one_epoch(model, criterion, optimizer, data_loader, lr_scheduler, epoc
         iterations += 1
         metric_logger.update(loss=loss.item(), lr=optimizer.param_groups[0]["lr"])
 
-        del image, target, sentences, loss, mask, iou_pred, data
+        del image, target, sentences, original_size, input_size, loss, mask, iou_pred, data
 
         gc.collect()
         torch.cuda.empty_cache()
@@ -95,13 +97,15 @@ def eval_batch(model, data_loader):
     with torch.no_grad():
         for data in metric_logger.log_every(data_loader, 100, header):
             total_its += 1
-            image, target, sentences = data
-            image, target, sentences = image.cuda(non_blocking=True),\
-                                       target.cuda(non_blocking=True),\
-                                       sentences.cuda(non_blocking=True)#,\
-                                    #    attentions.cuda(non_blocking=True)
+            image, target, sentences, original_size, input_size = data
+            image, target, sentences, original_size, input_size = image.cuda(non_blocking=True),\
+                                                                  target.cuda(non_blocking=True),\
+                                                                  sentences.cuda(non_blocking=True),\
+                                                                  original_size.cuda(non_blocking=True),\
+                                                                  input_size.cuda(non_blocking=True)
+                                                                #   attentions.cuda(non_blocking=True)
 
-            masks, iou_pred = model(image, sentences)
+            masks, iou_pred = model(image, sentences, multimask_output=True)
 
             iou, I, U = computeIoU(masks, target) # B x C
             iou, idx = iou.min(1)
@@ -148,14 +152,16 @@ def eval_seq(model, data_loader, bert_model, device):
 
     with torch.no_grad():
         for data in metric_logger.log_every(data_loader, 100, header):
-            image, target, sentences = data
-            image, target, sentences = image.to(device), target.to(device), \
-                                       sentences.to(device)#, attentions.to(device)
+            image, target, sentences, original_size, input_size = data
+            image, target, sentences, original_size, input_size = image.to(device), target.to(device), \
+                                                                  sentences.to(device), original_size.to(device), \
+                                                                  input_size.to(device)
+                                                                  #, attentions.to(device)
             
             target = target.cpu().data.numpy()
 
             for j in range(sentences.size(-1)):
-                masks, iou_pred = model(image, sentences[:, :, j])
+                masks, iou_pred = model(image, sentences[:, :, j], multimask_output=True)
                 min_iou_pred, idx = iou_pred.min(1)
                 output_mask = masks[:, idx.item(), :, :]
                 output_mask = output_mask.cpu().data.numpy()
@@ -175,7 +181,8 @@ def eval_seq(model, data_loader, bert_model, device):
 
                 pred_iou += min_iou_pred
 
-            del image, target, sentences, masks, iou_pred, min_iou_pred, idx, output_mask
+            del image, target, sentences, original_size, input_size, \
+                masks, iou_pred, min_iou_pred, idx, output_mask
 
     mean_IoU = np.array(mean_IoU)
     mIoU = np.mean(mean_IoU)

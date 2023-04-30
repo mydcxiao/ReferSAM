@@ -21,9 +21,9 @@ import torch.nn.functional as F
 import gc
 from collections import OrderedDict
 
-import Criterion
+from criterion import Criterion
 from engine import train_one_epoch, eval_batch
-from build_m import sam_model_registry
+from build_m import m_model_registry
 
 
 def get_dataset(image_set, image_transforms, target_transforms, args):
@@ -79,11 +79,20 @@ def main(args):
 
     # model initialization
     print(args.model)
-    model = sam_model_registry[args.model](checkpoint=args.checkpoint)
+    model = m_model_registry[args.model](resume=None,
+                                         ck_image_encoder=args.ck_image_encoder,
+                                         ck_prompt_encoder=args.ck_prompt_encoder,
+                                         ck_mask_decoder=args.ck_mask_decoder)
     model = torch.nn.SyncBatchNorm.convert_sync_batchnorm(model)
     model.cuda()
     model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[args.local_rank], find_unused_parameters=True)
     single_model = model.module
+
+    # resume training
+    checkpoint = None
+    if args.resume:
+        checkpoint = torch.load(args.resume, map_location='cpu')
+        single_model.load_state_dict(checkpoint['model'])
 
     # parameters to optimize
     params = list()
@@ -118,10 +127,9 @@ def main(args):
 
     # resume training (optimizer, lr scheduler, and the epoch)
     if args.resume:
-        resume = torch.load(args.resume, map_location='cpu')
-        optimizer.load_state_dict(resume['optimizer'])
-        lr_scheduler.load_state_dict(resume['lr_scheduler'])
-        resume_epoch = resume['epoch']
+        optimizer.load_state_dict(checkpoint['optimizer'])
+        lr_scheduler.load_state_dict(checkpoint['lr_scheduler'])
+        resume_epoch = checkpoint['epoch']
     else:
         resume_epoch = -999
     
@@ -143,17 +151,14 @@ def main(args):
         if save_checkpoint:
             print('Better epoch: {}\n'.format(epoch))
 
-            model_dict = single_model.state_dict()
+            dict_to_save = {'model': single_model.state_dict(),
+                            'optimizer': optimizer.state_dict(),
+                            'epoch': epoch, 
+                            'args': args,
+                            'lr_scheduler': lr_scheduler.state_dict()}
 
-            resume_dict = {'optimizer': optimizer.state_dict(),
-                           'epoch': epoch, 
-                           'args': args,
-                           'lr_scheduler': lr_scheduler.state_dict()}
-
-            utils.save_on_master(model_dict, os.path.join('./checkpoints/',
-                                                            'model_weight_{}.pth'.format(args.model)))
-            utils.save_on_master(resume_dict, os.path.join('./resume/',
-                                                            'model_resume_{}.pth'.format(args.model)))
+            utils.save_on_master(dict_to_save, os.path.join('./checkpoints/',
+                                                            '{}_best_{}.pth'.format(args.model, args.dataset)))
 
             best_oIoU = overallIoU
 

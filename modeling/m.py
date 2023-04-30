@@ -49,45 +49,44 @@ class M(nn.Module):
             # image_embeddings=curr_embedding.unsqueeze(0),
             image_embeddings=image_embeddings,
             image_pe=self.prompt_encoder.get_dense_pe(),
-            text_prompt_embeddings=text_embeddings,
+            prompt_embeddings=text_embeddings,
             multimask_output=multimask_output,
         )
-        # masks = self.postprocess_masks(
-        #     low_res_masks,
-        #     input_size=image_record["image"].shape[-2:],
-        #     original_size=image_record["original_size"],
-        # )
-        # masks = masks > self.mask_threshold
-        low_res_masks = low_res_masks > self.mask_threshold
-        return low_res_masks, iou_predictions
+        masks = self.postprocess_masks(
+            low_res_masks,
+            # input_size=image_record["image"].shape[-2:],
+            # original_size=image_record["original_size"],
+        )
+        masks = masks > self.mask_threshold
+        return masks, iou_predictions
     
-    # def postprocess_masks(
-    #     self,
-    #     masks: torch.Tensor,
-    #     input_size: Tuple[int, ...],
-    #     original_size: Tuple[int, ...],
-    # ) -> torch.Tensor:
-    #     """
-    #     Remove padding and upscale masks to the original image size.
+    def postprocess_masks(
+        self,
+        masks: torch.Tensor,
+        # input_size: Tuple[int, ...],
+        # original_size: Tuple[int, ...],
+    ) -> torch.Tensor:
+        """
+        Remove padding and upscale masks to the original image size.
 
-    #     Arguments:
-    #       masks (torch.Tensor): Batched masks from the mask_decoder,
-    #         in BxCxHxW format.
-    #       input_size (tuple(int, int)): The size of the image input to the
-    #         model, in (H, W) format. Used to remove padding.
-    #       original_size (tuple(int, int)): The original size of the image
-    #         before resizing for input to the model, in (H, W) format.
+        Arguments:
+          masks (torch.Tensor): Batched masks from the mask_decoder,
+            in BxCxHxW format.
+          input_size (tuple(int, int)): The size of the image input to the
+            model, in (H, W) format. Used to remove padding.
+          original_size (tuple(int, int)): The original size of the image
+            before resizing for input to the model, in (H, W) format.
 
-    #     Returns:
-    #       (torch.Tensor): Batched masks in BxCxHxW format, where (H, W)
-    #         is given by original_size.
-    #     """
-    #     masks = F.interpolate(
-    #         masks,
-    #         (self.image_encoder.img_size, self.image_encoder.img_size),
-    #         mode="bilinear",
-    #         align_corners=False,
-    #     )
-    #     masks = masks[..., : input_size[0], : input_size[1]]
-    #     masks = F.interpolate(masks, original_size, mode="bilinear", align_corners=False)
-    #     return masks
+        Returns:
+          (torch.Tensor): Batched masks in BxCxHxW format, where (H, W)
+            is given by original_size.
+        """
+        masks = F.interpolate(
+            masks,
+            (self.image_encoder.img_size, self.image_encoder.img_size),
+            mode="bilinear",
+            align_corners=False,
+        )
+        # masks = masks[..., : input_size[0], : input_size[1]]
+        # masks = F.interpolate(masks, original_size, mode="bilinear", align_corners=False)
+        return masks

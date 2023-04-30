@@ -1,4 +1,6 @@
+import torch
 from torch import nn
+import torch.nn.functional as F
 
 class Criterion(nn.Module):
     def __init__(self,

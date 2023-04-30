@@ -12,53 +12,74 @@ from functools import partial
 from modeling import ImageEncoderViT, MaskDecoder, PromptEncoder, M, TwoWayTransformer
 
 
-def build_sam_vit_h(checkpoint=None):
-    return _build_sam(
+def build_m_vit_h(resume=None,
+                  ck_image_encoder=None,
+                  ck_prompt_encoder=None,
+                  ck_mask_decoder=None):
+    return _build_m(
         encoder_embed_dim=1280,
         encoder_depth=32,
         encoder_num_heads=16,
         encoder_global_attn_indexes=[7, 15, 23, 31],
-        checkpoint=checkpoint,
+        resume=resume,
+        ck_image_encoder=ck_image_encoder,
+        ck_prompt_encoder=ck_prompt_encoder,
+        ck_mask_decoder=ck_mask_decoder,
     )
 
 
-build_sam = build_sam_vit_h
+build_m = build_m_vit_h
 
 
-def build_sam_vit_l(checkpoint=None):
-    return _build_sam(
+def build_m_vit_l(resume=None,
+                  ck_image_encoder=None,
+                  ck_prompt_encoder=None,
+                  ck_mask_decoder=None):
+    return _build_m(
         encoder_embed_dim=1024,
         encoder_depth=24,
         encoder_num_heads=16,
         encoder_global_attn_indexes=[5, 11, 17, 23],
-        checkpoint=checkpoint,
+        resume=resume,
+        ck_image_encoder=ck_image_encoder,
+        ck_prompt_encoder=ck_prompt_encoder,
+        ck_mask_decoder=ck_mask_decoder,
     )
 
 
-def build_sam_vit_b(checkpoint=None):
-    return _build_sam(
+def build_m_vit_b(resume=None,
+                  ck_image_encoder=None,
+                  ck_prompt_encoder=None,
+                  ck_mask_decoder=None):
+    return _build_m(
         encoder_embed_dim=768,
         encoder_depth=12,
         encoder_num_heads=12,
         encoder_global_attn_indexes=[2, 5, 8, 11],
-        checkpoint=checkpoint,
+        resume=resume,
+        ck_image_encoder=ck_image_encoder,
+        ck_prompt_encoder=ck_prompt_encoder,
+        ck_mask_decoder=ck_mask_decoder,
     )
 
 
-sam_model_registry = {
-    "default": build_sam_vit_h,
-    "vit_h": build_sam_vit_h,
-    "vit_l": build_sam_vit_l,
-    "vit_b": build_sam_vit_b,
+m_model_registry = {
+    "default": build_m_vit_h,
+    "vit_h": build_m_vit_h,
+    "vit_l": build_m_vit_l,
+    "vit_b": build_m_vit_b,
 }
 
 
-def _build_sam(
+def _build_m(
     encoder_embed_dim,
     encoder_depth,
     encoder_num_heads,
     encoder_global_attn_indexes,
-    checkpoint=None,
+    resume=None,
+    ck_image_encoder=None,
+    ck_prompt_encoder=None,
+    ck_mask_decoder=None,
 ):
     prompt_embed_dim = 256
     image_size = 1024
@@ -101,14 +122,23 @@ def _build_sam(
         ),
     )
     # sam.eval()
-    if checkpoint is not None:
-        with open(checkpoint, "rb") as f:
+    if resume is not None:
+        with open(resume, "rb") as f:
             state_dict = torch.load(f)
-        # keys = list(state_dict.keys())
-        # for k in keys:
-        #     if 'prompt_encoder' in k:
-        #         state_dict.pop(k)
-        m.load_state_dict(state_dict)
+        m.load_state_dict(state_dict['model'])
+    else:
+        if ck_image_encoder is not None:
+            with open(ck_image_encoder, "rb") as f:
+                state_dict = torch.load(f)
+            m.image_encoder.load_state_dict(state_dict)
+        if ck_prompt_encoder is not None:
+            with open(ck_prompt_encoder, "rb") as f:
+                state_dict = torch.load(f)
+            m.prompt_encoder.load_state_dict(state_dict)
+        if ck_mask_decoder is not None:
+            with open(ck_mask_decoder, "rb") as f:
+                state_dict = torch.load(f)
+            m.mask_decoder.load_state_dict(state_dict)
     return m
 
 
@@ -117,5 +147,8 @@ def _build_sam(
 #     print(name)
 
 # model = build_sam_vit_h(checkpoint='checkpoints/sam_vit_h_4b8939.pth')
+
+# model = build_m_vit_h(ck_image_encoder='./pretrained/image_encoder/sam_vit_h.pth',
+#                       ck_mask_decoder='./pretrained/mask_decoder/sam_vit_h_decoder.pth')
 
 

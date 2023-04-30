@@ -15,6 +15,8 @@ from refer.refer import REFER
 from args import get_parser
 
 from utils import utils
+from utils import transforms as T
+
 
 import open_clip
 # from bert.tokenization_bert import BertTokenizer
@@ -37,7 +39,6 @@ class ReferDataset(data.Dataset):
         self.split = split
         self.refer = REFER(args.refer_data_root, args.dataset, args.splitBy)
 
-
         ref_ids = self.refer.getRefIds(split=self.split)
         img_ids = self.refer.getImgIds(ref_ids)
 
@@ -47,8 +48,6 @@ class ReferDataset(data.Dataset):
 
         self.input_ids = []
         self.tokenizer = open_clip.tokenize
-        # produce 768-d features
-        # model, _, _ = open_clip.create_model_and_transforms('ViT-L-14-336', pretrained='openai')
 
         self.eval_mode = eval_mode
 
@@ -80,6 +79,11 @@ class ReferDataset(data.Dataset):
         img = Image.open(os.path.join(self.refer.IMAGE_DIR, this_img['file_name'])).convert("RGB")
         img = np.array(img)
 
+        original_size = torch.Tensor(img.shape[:2])
+        input_size = torch.Tensor(T.ResizeLongestSide.get_preprocess_shape(img.shape[0], 
+                                                                           img.shape[1], 
+                                                                           args.img_size))
+
         ref = self.refer.loadRefs(this_ref_id)
 
         ref_mask = np.array(self.refer.getMask(ref[0])['mask'])
@@ -107,24 +111,24 @@ class ReferDataset(data.Dataset):
             tensor_embeddings = self.input_ids[index][choice_sent]
             # tensor_embeddings = self.input_ids[index][choice_sent].squeeze(0)
 
-        return img, target, tensor_embeddings
+        return img.float(), target.float(), tensor_embeddings, original_size, input_size
 
 # import torch.distributed as dist
 # import torch.backends.cudnn as cudnn
 
-def get_transform(args):
-    from utils import transforms as T
-    image_transforms = [T.ResizeLongestSide(args.img_size),
-                         T.Normalize(),
-                         T.ToTensor(),
-                         T.Pad(args.img_size)
-                        ]
-    target_transforms = [T.ResizeLongestSide(args.img_size),
-                         T.ToTensor(),
-                         T.Pad(args.img_size)
-                        ]
+# def get_transform(args):
+#     from utils import transforms as T
+#     image_transforms = [T.ResizeLongestSide(args.img_size),
+#                          T.Normalize(),
+#                          T.ToTensor(),
+#                          T.Pad(args.img_size)
+#                         ]
+#     target_transforms = [T.ResizeLongestSide(args.img_size),
+#                          T.ToTensor(),
+#                          T.Pad(args.img_size)
+#                         ]
     
-    return T.Compose(image_transforms), T.Compose(target_transforms)
+#     return T.Compose(image_transforms), T.Compose(target_transforms)
 
 # from utils import utils
 # utils.init_distributed_mode(args)
@@ -136,7 +140,7 @@ def get_transform(args):
 #                   image_transforms=image_transforms,
 #                   target_transforms=target_transforms,
 #                 #   eval_mode=False,
-#                   eval_mode = True,
+#                 #   eval_mode = True,
 #                  )
 
 # num_tasks = utils.get_world_size()
@@ -156,6 +160,12 @@ def get_transform(args):
 # print(next(iter(data_loader))[0].size()) 
 # print(next(iter(data_loader))[1].size()) 
 # print(next(iter(data_loader))[2].size()) 
+# print(next(iter(data_loader))[3].size()) 
+# print(next(iter(data_loader))[4].size())
 
+
+# print(next(iter(data_loader))[1])
+# print(next(iter(data_loader))[3]) 
+# print(next(iter(data_loader))[4])
 
 

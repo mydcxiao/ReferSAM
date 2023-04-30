@@ -9,7 +9,9 @@ def get_parser():
     parser.add_argument('--amsgrad', action='store_true',
                     help='if true, set amsgrad to True in an Adam or AdamW optimizer.')
     parser.add_argument('-b', '--batch-size', default=8, type=int)
-    parser.add_argument('--checkpoint', default=None, help='path to checkpoint')
+    parser.add_argument('--ck_image_encoder', default='./pretrained/image_encoder/sam_vit_h.pth', help='path to checkpoint')
+    parser.add_argument('--ck_prompt_encoder', default=None, help='path to checkpoint')
+    parser.add_argument('--ck_mask_decoder', default='./pretrained/mask_decoder/sam_vit_h_decoder.pth', help='path to checkpoint')
     parser.add_argument('--dataset', default='refcoco', help='refcoco, refcoco+, or refcocog')
     parser.add_argument('--device', default='cuda:0', help='device')  # only used when testing on a single machine
     parser.add_argument('--epochs', default=40, type=int, metavar='N', help='number of total epochs to run')

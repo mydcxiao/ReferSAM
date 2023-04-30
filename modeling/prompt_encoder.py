@@ -14,6 +14,9 @@ from typing import Any, Optional, Tuple, Type
 
 import open_clip
 
+from torch.nn import functional as F
+
+
 class PromptEncoder(nn.Module):
     def __init__(
         self,
@@ -27,6 +30,7 @@ class PromptEncoder(nn.Module):
     ) -> None:
         super().__init__()
         self.embed_dim = embed_dim
+        self.image_embedding_size = image_embedding_size
         # self.act = activation()
         # self.lin = nn.Linear(input_dim, embed_dim)
         self.pe_layer = PositionEmbeddingRandom(embed_dim // 2)
@@ -36,16 +40,16 @@ class PromptEncoder(nn.Module):
         )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        x = encode_text(x)
+        x = self.encode_text(x)
         return self.layer(x)
     
     @torch.cuda.amp.autocast()
-    def encode_text(self, x: torch.Tensor):
-        x = x.squeeze(1)
-        x = self.text_model.token_embedding(x)  # [batch_size, n_ctx, d_model]
+    def encode_text(self, text: torch.Tensor):
+        text = text.squeeze(1)
+        x = self.text_model.token_embedding(text)  # [batch_size, n_ctx, d_model]
         x = x + self.text_model.positional_embedding
         x = x.permute(1, 0, 2)  # NLD -> LND
-        x = self.text_model.transformer(x, attn_mask self.text_model.attn_mask)
+        x = self.text_model.transformer(x, attn_mask=self.text_model.attn_mask)
         x = x.permute(1, 0, 2)  # LND -> NLD
         x = self.text_model.ln_final(x)
         text_encodings = x
