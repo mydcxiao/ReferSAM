@@ -52,11 +52,13 @@ def get_transform(args):
 def main(args):
     image_transforms, target_transforms = get_transform(args)
 
-    dataset = get_dataset("train",
+    dataset = get_dataset(#"train",
+                          'testB',
                           image_transforms=image_transforms,
                           target_transforms=target_transforms,
                           args=args)
-    dataset_test = get_dataset("val",
+    dataset_test = get_dataset(#"val",
+                               'testB',
                                image_transforms=image_transforms,
                                target_transforms=target_transforms,
                                args=args)
@@ -82,11 +84,22 @@ def main(args):
     model = m_model_registry[args.model](resume=None,
                                          ck_image_encoder=args.ck_image_encoder,
                                          ck_prompt_encoder=args.ck_prompt_encoder,
-                                         ck_mask_decoder=args.ck_mask_decoder)
-    model = torch.nn.SyncBatchNorm.convert_sync_batchnorm(model)
+                                        #  ck_mask_decoder=args.ck_mask_decoder)
+                                         ck_mask_decoder=None)
+    # model = torch.nn.SyncBatchNorm.convert_sync_batchnorm(model)
     model.cuda()
     model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[args.local_rank], find_unused_parameters=True)
     single_model = model.module
+
+    # criterion for training 
+    criterion = Criterion(args.batch_size, 
+                          args.weight_focal_loss, 
+                          args.weight_dice_loss,
+                          args.weight_iou_loss)
+    # criterion = torch.nn.SyncBatchNorm.convert_sync_batchnorm(criterion)
+    criterion.cuda()
+    # criterion = torch.nn.parallel.DistributedDataParallel(criterion, device_ids=[args.local_rank], find_unused_parameters=True)
+
 
     # resume training
     checkpoint = None
@@ -95,18 +108,18 @@ def main(args):
         single_model.load_state_dict(checkpoint['model'])
 
     # parameters to optimize
+    # layer_ld = args.layer_ld
+    # lr = args.lr
+
     params = list()
+    # layer_names = list()
     for name, m in single_model.named_parameters():
         if 'prompt_encoder.layer' in name or 'mask_decoder' in name:
             params.append(m)
 
+
     params_to_optimize = [
         {'params': params},
-        # {"params": [p for p in single_model.classifier.parameters() if p.requires_grad]},
-        # # the following are the parameters of bert
-        # {"params": reduce(operator.concat,
-        #                     [[p for p in single_model.text_encoder.encoder.layer[i].parameters()
-        #                     if p.requires_grad] for i in range(10)])},
     ]
 
     # optimizer
@@ -118,7 +131,11 @@ def main(args):
 
     # learning rate scheduler
     lr_scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer,
-                                                     lambda x: (1 - x / (len(data_loader) * args.epochs)) ** 0.9)
+                                                    #  lambda x: (1 - x / (len(data_loader) * args.epochs)) ** 0.9 \
+                                                     lambda x: x / args.warmup if x < args.warmup else \
+                                                     1 if x < len(data_loader) * args.epochs * 0.66 else \
+                                                     0.1 if x < len(data_loader) * args.epochs * 0.96 else \
+                                                     0.01)
 
     # housekeeping
     start_time = time.time()
@@ -133,12 +150,7 @@ def main(args):
     else:
         resume_epoch = -999
     
-    # criterion for training 
-    criterion = Criterion(args.batch_size, 
-                          args.weight_focal_loss, 
-                          args.weight_dice_loss,
-                          args.weight_iou_loss)
-    # TODO training loops
+    # TODO --debug training loops 
     for epoch in range(max(0, resume_epoch+1), args.epochs):
         data_loader.sampler.set_epoch(epoch)
         train_one_epoch(model, criterion, optimizer, data_loader, lr_scheduler, epoch, args.print_freq,

@@ -28,20 +28,18 @@ class Criterion(nn.Module):
         # upsample predictions to the target size
         num_multimask = src_masks.size(1)
         target_masks = target_masks.flatten(1)
-        loss_focal_list = []
-        loss_dice_list = []
+        wf = self.weight_focal / (self.weight_focal + self.weight_dice)
+        wd = 1 - wf
+        loss_masks_list = []
         for i in range(num_multimask):
             src_mask = src_masks[:, i, :, :].flatten(1)
             # target_masks = target_masks.view(src_masks.shape)
-            loss_focal_list.append(self.sigmoid_focal_loss(src_mask, target_masks))
-            loss_dice_list.append(self.dice_loss(src_mask, target_masks))
-        loss_focal = torch.stack(loss_focal_list, dim=1)
-        loss_dice = torch.stack(loss_dice_list, dim=1)
-        loss_focal, _ = loss_focal.min(1)
-        loss_dice, _ = loss_dice.min(1)
-        loss_focal = loss_focal.sum() / self.num_masks
-        loss_dice = loss_dice.sum() / self.num_masks
-        return loss_focal, loss_dice
+            loss_masks_list.append(wf * self.sigmoid_focal_loss(src_mask, target_masks) \
+                                  + wd * self.dice_loss(src_mask, target_masks))
+        loss_masks_tensor = torch.stack(loss_masks_list, dim=1)
+        loss_masks, _ = loss_masks_tensor.min(1)
+        loss_masks = loss_masks.sum() / self.num_masks
+        return loss_masks
 
 
     def dice_loss(self,
@@ -59,7 +57,7 @@ class Criterion(nn.Module):
                     (0 for the negative class and 1 for the positive class).
         """
         inputs = inputs.sigmoid()
-        inputs = inputs.flatten(1)
+        # inputs = inputs.flatten(1)
         numerator = 2 * (inputs * targets).sum(1)
         denominator = inputs.sum(-1) + targets.sum(-1)
         loss = 1 - (numerator + 1) / (denominator + 1)
@@ -109,9 +107,9 @@ class Criterion(nn.Module):
         return loss.mean(1).sum() / self.num_masks
     
     def forward(self, src_masks, target_masks, iou_pred, iou_gt):
-        loss_focal, loss_dice = self.loss_masks(src_masks, target_masks)
+        loss_masks = self.loss_masks(src_masks, target_masks)
         loss_iou = self.loss_iou(iou_pred, iou_gt)
-        return self.weight_focal * loss_focal + self.weight_dice * loss_dice + self.weight_iou * loss_iou
+        return loss_masks + self.weight_iou * loss_iou
 
 # c = Criterion(8, 20.0, 1.0, 1.0)
 # for name, param in c.named_parameters():

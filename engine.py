@@ -13,6 +13,7 @@ from utils import utils
 import numpy as np
 import torch.nn.functional as F
 import gc
+import torch.distributed as dist
 
 def computeIoU(pred, # B x C x H x W 
                gt, # B x H x W
@@ -79,6 +80,13 @@ def train_one_epoch(model, criterion, optimizer, data_loader, lr_scheduler, epoc
         torch.cuda.empty_cache()
         torch.cuda.synchronize()
 
+    metric_logger.synchronize_between_processes()
+    train_loss = torch.tensor(train_loss, dtype=torch.float64, device='cuda')
+    dist.barrier()
+    dist.all_reduce(train_loss)
+    train_loss = train_loss.item()
+    print("Train loss: {:4f} ({:4f})".format(metric_logger.meters['loss'].total, train_loss))
+
 
 def eval_batch(model, data_loader):
     model.eval()
@@ -108,9 +116,14 @@ def eval_batch(model, data_loader):
             masks, iou_pred = model(image, sentences, multimask_output=True)
 
             iou, I, U = computeIoU(masks, target) # B x C
-            iou, idx = iou.min(1)
+
+            iou, idx = iou.max(1)
             I = I[range(len(idx)), idx]
             U = U[range(len(idx)), idx]
+
+            iou = iou.sum().item() / iou.size(0)
+            I = I.sum().item()
+            U = U.sum().item()
 
             acc_ious += iou
             mean_IoU.append(iou)
@@ -136,7 +149,7 @@ def eval_batch(model, data_loader):
     return 100 * iou, 100 * cum_I / cum_U
 
 
-def eval_seq(model, data_loader, bert_model, device):
+def eval_seq(model, data_loader, device):
     model.eval()
     metric_logger = utils.MetricLogger(delimiter="  ")
 
