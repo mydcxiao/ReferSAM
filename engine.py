@@ -14,6 +14,8 @@ import numpy as np
 import torch.nn.functional as F
 import gc
 import torch.distributed as dist
+from PIL import Image
+
 
 def computeIoU(pred, # B x C x H x W 
                gt, # B x H x W
@@ -35,13 +37,30 @@ def IoU(pred_seg, gd_seg):
 
 
 def train_one_epoch(model, criterion, optimizer, data_loader, lr_scheduler, epoch, print_freq,
-                    iterations):
+                    iterations, multimask,
+                    writer = None,
+                    ):
     model.train()
-    model.module.image_encoder.eval()
-    model.module.image_encoder.requires_grad_(False)
-    model.module.prompt_encoder.text_model.eval()
-    model.module.prompt_encoder.text_model.requires_grad_(False)
+    # TODO check if below code works for freezing
+    #----------------------------------------------------------------
+    # model.module.image_encoder.eval()
+    # model.module.image_encoder.requires_grad_(False)
+    # model.module.prompt_encoder.text_model.eval()
+    # model.module.prompt_encoder.text_model.requires_grad_(False)
+    #----------------------------------------------------------------
     criterion.train()
+    #-----------------------------------------------------------------
+    # check the frozen part
+    # print(model.module.image_encoder.training)
+    # print(model.module.image_encoder.pos_embed.requires_grad)
+    # print(list(model.module.image_encoder.parameters())[0].requires_grad)
+    # print(model.module.prompt_encoder.text_model.training)
+    # print(list(model.module.prompt_encoder.layer.parameters())[0].requires_grad)
+    # print(list(model.module.prompt_encoder.text_model.parameters())[0].requires_grad)
+    # print(model.module.prompt_encoder.pe_layer.positional_encoding_gaussian_matrix.requires_grad)
+    # print(list(model.module.mask_decoder.output_upscaling.parameters())[0].requires_grad)
+    # print(list(model.module.mask_decoder.output_hypernetworks_mlps[0].parameters())[0].requires_grad)
+    #-----------------------------------------------------------------
     metric_logger = utils.MetricLogger(delimiter="  ")
     metric_logger.add_meter('lr', utils.SmoothedValue(window_size=1, fmt='{value}'))
     header = 'Epoch: [{}]'.format(epoch)
@@ -50,22 +69,42 @@ def train_one_epoch(model, criterion, optimizer, data_loader, lr_scheduler, epoc
 
     for data in metric_logger.log_every(data_loader, print_freq, header):
         total_its += 1
-        image, target, sentences, original_size, input_size = data
+        # image, target, sentences, original_size, input_size = data
+        # image, target, sentences, original_size, input_size = image.cuda(non_blocking=True),\
+        #                                                       target.cuda(non_blocking=True),\
+        #                                                       sentences.cuda(non_blocking=True),\
+        #                                                       original_size.cuda(non_blocking=True),\
+        #                                                       input_size.cuda(non_blocking=True)
+                                                            
+        #-----------------------------------------------------------------------------------------------
+        # for visualization
+        image, target, sentences, original_size, input_size, original_img = data
         image, target, sentences, original_size, input_size = image.cuda(non_blocking=True),\
                                                               target.cuda(non_blocking=True),\
                                                               sentences.cuda(non_blocking=True),\
                                                               original_size.cuda(non_blocking=True),\
-                                                              input_size.cuda(non_blocking=True)
-                                                            #   attentions.cuda(non_blocking=True)
+                                                              input_size.cuda(non_blocking=True)#, \
+                                                              #original_img.cuda(non_blocking=True)
+        #-----------------------------------------------------------------------------------------------
 
-        mask, iou_pred = model(image, sentences, multimask_output=True)
+        mask_logit, iou_pred = model(image, sentences, multimask_output=multimask)
 
-        iou_gt, _, _ = computeIoU(mask, target) #TODO check
+        mask = torch.where(mask_logit > 0.0, 1, 0)
 
-        loss = criterion(mask.float(), target, iou_pred, iou_gt) #TODO check
+        # print(mask.requires_grad)
+
+        iou_gt, _, _ = computeIoU(mask, target) #TODO check if this is correct
+
+        loss = criterion(mask_logit, target, iou_pred, iou_gt) #TODO check if this is correct
 
         optimizer.zero_grad()  # set_to_none=True is only available in pytorch 1.6+
         loss.backward()
+        #--------------------------------
+        # check gradient
+        # for n, p in model.module.named_parameters():
+        #     if p.grad is not None:
+        #         print(n,':', p.grad)
+        #--------------------------------
         optimizer.step()
         lr_scheduler.step()
 
@@ -73,6 +112,13 @@ def train_one_epoch(model, criterion, optimizer, data_loader, lr_scheduler, epoc
         train_loss += loss.item()
         iterations += 1
         metric_logger.update(loss=loss.item(), lr=optimizer.param_groups[0]["lr"])
+
+        #-----------------------------------------------------------------------------------------------
+        # for summary writer
+        if writer is not None:
+            writer.add_scalar(f'train_per_iter/{utils.get_rank():d}_loss', loss.item(), 
+                               iterations + len(data_loader) * epoch)
+        #-----------------------------------------------------------------------------------------------
 
         del image, target, sentences, original_size, input_size, loss, mask, iou_pred, data
 
@@ -86,9 +132,15 @@ def train_one_epoch(model, criterion, optimizer, data_loader, lr_scheduler, epoc
     dist.all_reduce(train_loss)
     train_loss = train_loss.item()
     print("Train loss: {:4f} ({:4f})".format(metric_logger.meters['loss'].total, train_loss))
+    #-----------------------------------------------------------------------------------------------
+    # for summary writer
+    if writer is not None:
+        writer.add_scalar('train_per_epoch/loss', train_loss, epoch)
 
 
-def eval_batch(model, data_loader):
+def eval_train(model, data_loader, epoch, multimask,
+               writer = None,
+               ):
     model.eval()
     metric_logger = utils.MetricLogger(delimiter="  ")
     header = 'Test:'
@@ -103,40 +155,96 @@ def eval_batch(model, data_loader):
     mean_IoU = []
 
     with torch.no_grad():
-        for data in metric_logger.log_every(data_loader, 100, header):
+        for data in metric_logger.log_every(data_loader, 50, header):
             total_its += 1
-            image, target, sentences, original_size, input_size = data
+            # image, target, sentences, original_size, input_size = data
+            # image, target, sentences, original_size, input_size = image.cuda(non_blocking=True),\
+            #                                                       target.cuda(non_blocking=True),\
+            #                                                       sentences.cuda(non_blocking=True),\
+            #                                                       original_size.cuda(non_blocking=True),\
+            #                                                       input_size.cuda(non_blocking=True)
+
+            #-----------------------------------------------------------------------------------------------
+            # for visualization
+            image, target, sentences, original_size, input_size, original_img = data
             image, target, sentences, original_size, input_size = image.cuda(non_blocking=True),\
-                                                                  target.cuda(non_blocking=True),\
-                                                                  sentences.cuda(non_blocking=True),\
-                                                                  original_size.cuda(non_blocking=True),\
-                                                                  input_size.cuda(non_blocking=True)
-                                                                #   attentions.cuda(non_blocking=True)
+                                                                target.cuda(non_blocking=True),\
+                                                                sentences.cuda(non_blocking=True),\
+                                                                original_size.cuda(non_blocking=True),\
+                                                                input_size.cuda(non_blocking=True)#, \
+                                                                #original_img.cuda(non_blocking=True)
+            #-----------------------------------------------------------------------------------------------
 
-            masks, iou_pred = model(image, sentences, multimask_output=True)
+            mask, iou_pred = model(image, sentences, multimask_output=multimask)
 
-            iou, I, U = computeIoU(masks, target) # B x C
+            iou, I, U = computeIoU(mask, target) # B x C
 
             iou, idx = iou.max(1)
             I = I[range(len(idx)), idx]
             U = U[range(len(idx)), idx]
 
-            iou = iou.sum().item() / iou.size(0)
-            I = I.sum().item()
-            U = U.sum().item()
+            max_iou_pred_gt = iou_pred[range(len(idx)), idx]
+            max_iou_pred, _ = iou_pred.max(1)
 
-            acc_ious += iou
-            mean_IoU.append(iou)
-            cum_I += I
-            cum_U += U
+            acc_ious += iou.mean().item()
+            mean_IoU.append(iou.mean().item())
+            cum_I += I.sum().item()
+            cum_U += U.sum().item()
+
             for n_eval_iou in range(len(eval_seg_iou_list)):
                 eval_seg_iou = eval_seg_iou_list[n_eval_iou]
-                seg_correct[n_eval_iou] += (iou >= eval_seg_iou)
-            seg_total += 1
+                for i in range(len(idx)):
+                    if iou[i].item() >= eval_seg_iou:
+                        seg_correct[n_eval_iou] += 1
+            seg_total += len(idx)
+
+            #-----------------------------------------------------------------------------------------------
+            # for summary writer
+            if writer is not None:
+                img_ndarray = original_img.permute(0,2,3,1).numpy().astype(np.uint8)
+                target1 = target.cpu().data.numpy().astype(np.uint8)
+                target2 = mask[range(len(idx)), idx].squeeze(1).cpu().data.numpy()
+                target2 = target2.astype(np.uint8)
+                for i in range(img_ndarray.shape[0]):
+                    img = img_ndarray[i, :, : ,:]
+                    mask1 = target1[i]
+                    mask2 = target2[i]
+                    visualization1 = overlay_davis(img, mask1, colors=[[0,0,0],[0,255,0]])
+                    visualization2 = overlay_davis(img, mask2)
+                    visualization = 0.5 * visualization1 + 0.5 * visualization2
+                    visualization = visualization.astype(img.dtype)
+                    writer.add_image(f'eval_val/{utils.get_rank():d}_{total_its:d}_{i:d}_{iou[i].item():.2f}_{max_iou_pred[i].item():.2f}_{max_iou_pred_gt[i].item():.2f}'
+                                     , visualization, epoch, dataformats='HWC')
+            #-----------------------------------------------------------------------------------------------
+
+            torch.cuda.synchronize()
+        
         iou = acc_ious / total_its
 
     mean_IoU = np.array(mean_IoU)
     mIoU = np.mean(mean_IoU)
+
+    #------------------------------------------------------------------------------------------------
+    # output validation iou in summary writer
+    # if writer is not None:
+    #     writer.add_scalar(f'eval_val/{utils.get_rank():d}_mIoU', mIoU * 100., epoch)
+    #     writer.add_scalar(f'eval_val/{utils.get_rank():d}_average_IoU', 100 * iou, epoch)
+    #     writer.add_scalar(f'eval_val/{utils.get_rank():d}_overall_IoU', cum_I * 100. / cum_U, epoch)
+    #------------------------------------------------------------------------------------------------
+
+    t = torch.tensor([iou, mIoU, cum_I, cum_U, seg_total], dtype=torch.float64, device='cuda')
+    seg = torch.tensor(seg_correct, dtype=torch.int32, device='cuda')
+    dist.barrier()
+    dist.all_reduce(t)
+    dist.all_reduce(seg)
+    t = t.tolist()
+    iou = t[0] / utils.get_world_size()
+    mIoU = t[1] / utils.get_world_size()
+    cum_I = t[2]
+    cum_U = t[3]
+    seg_total = int(t[4])
+    seg_correct = seg.tolist()
+
     print('Final results:')
     print('Mean IoU is %.2f\n' % (mIoU * 100.))
     results_str = ''
@@ -146,10 +254,18 @@ def eval_batch(model, data_loader):
     results_str += '    overall IoU = %.2f\n' % (cum_I * 100. / cum_U)
     print(results_str)
 
+    #------------------------------------------------------------------------------------------------
+    # output validation iou in summary writer
+    if writer is not None:
+        writer.add_scalar('eval_val/global_mIoU', mIoU * 100., epoch)
+        writer.add_scalar('eval_val/global_average_IoU', 100 * iou, epoch)
+        writer.add_scalar('eval_val/global_overall_IoU', cum_I * 100. / cum_U, epoch)
+    #------------------------------------------------------------------------------------------------
+
     return 100 * iou, 100 * cum_I / cum_U
 
 
-def eval_seq(model, data_loader, device):
+def eval_test(model, data_loader, device, multimask, writer=None):
     model.eval()
     metric_logger = utils.MetricLogger(delimiter="  ")
 
@@ -160,24 +276,25 @@ def eval_seq(model, data_loader, device):
     seg_total = 0
     mean_IoU = []
     header = 'Test:'
-
+    iterations = 0
     pred_iou = 0
 
     with torch.no_grad():
         for data in metric_logger.log_every(data_loader, 100, header):
-            image, target, sentences, original_size, input_size = data
+            image, target, sentences, original_size, input_size, original_img = data
             image, target, sentences, original_size, input_size = image.to(device), target.to(device), \
                                                                   sentences.to(device), original_size.to(device), \
                                                                   input_size.to(device)
-                                                                  #, attentions.to(device)
             
             target = target.cpu().data.numpy()
+            iterations += 1
 
             for j in range(sentences.size(-1)):
-                masks, iou_pred = model(image, sentences[:, :, j], multimask_output=True)
-                min_iou_pred, idx = iou_pred.min(1)
-                output_mask = masks[:, idx.item(), :, :]
+                masks, iou_pred = model(image, sentences[:, :, :, j], multimask_output=multimask)
+                max_iou_pred, idx = iou_pred.max(1)
+                output_mask = masks[range(len(idx)), idx, :, :]
                 output_mask = output_mask.cpu().data.numpy()
+                max_iou_pred = max_iou_pred.item()
 
                 I, U = IoU(output_mask, target)
                 if U == 0:
@@ -185,6 +302,24 @@ def eval_seq(model, data_loader, device):
                 else:
                     this_iou = I*1.0/U
                 mean_IoU.append(this_iou)
+                #----------------------------------------------------
+                # output images in summary writer
+                if writer is not None:
+                    img_ndarray = original_img.permute(0,2,3,1).numpy().astype(np.uint8)
+                    target1 = target.astype(np.uint8)
+                    target2 = output_mask
+                    target2 = target2.astype(np.uint8)
+                    for i in range(img_ndarray.shape[0]):
+                        img = img_ndarray[i, :, : ,:]
+                        mask1 = target1[i]
+                        mask2 = target2[i]
+                        visualization1 = overlay_davis(img, mask1, colors=[[0,0,0],[0,255,0]])
+                        visualization2 = overlay_davis(img, mask2)
+                        visualization = 0.5 * visualization1 + 0.5 * visualization2
+                        visualization = visualization.astype(img.dtype)
+                        writer.add_image(f'eval_test/{iterations:d}_{this_iou:.2f}_{max_iou_pred:.2f}', visualization, iterations,
+                                        dataformats='HWC')
+                #----------------------------------------------------
                 cum_I += I
                 cum_U += U
                 for n_eval_iou in range(len(eval_seg_iou_list)):
@@ -192,21 +327,51 @@ def eval_seq(model, data_loader, device):
                     seg_correct[n_eval_iou] += (this_iou >= eval_seg_iou)
                 seg_total += 1
 
-                pred_iou += min_iou_pred
-
+                pred_iou += max_iou_pred
+        
             del image, target, sentences, original_size, input_size, \
-                masks, iou_pred, min_iou_pred, idx, output_mask
+                masks, iou_pred, max_iou_pred, idx, output_mask
+
+        pred_iou = pred_iou / seg_total
 
     mean_IoU = np.array(mean_IoU)
     mIoU = np.mean(mean_IoU)
     print('Final results:')
     print('Mean IoU is %.2f\n' % (mIoU*100.))
-
     print('Predicted IoU is %.2f\n' % (pred_iou*100.))
-
     results_str = ''
     for n_eval_iou in range(len(eval_seg_iou_list)):
         results_str += '    precision@%s = %.2f\n' % \
                        (str(eval_seg_iou_list[n_eval_iou]), seg_correct[n_eval_iou] * 100. / seg_total)
     results_str += '    overall IoU = %.2f\n' % (cum_I * 100. / cum_U)
     print(results_str)
+
+
+
+#-------------------------------------------------------------------------------------------------
+# overlay mask and image for visualization
+# show/save results
+def overlay_davis(image, mask, colors=[[0, 0, 0], [255, 0, 0]], cscale=1, alpha=0.4):
+    from scipy.ndimage.morphology import binary_dilation
+
+    colors = np.reshape(colors, (-1, 3))
+    colors = np.atleast_2d(colors) * cscale
+
+    im_overlay = image.copy()
+    object_ids = np.unique(mask)
+
+    for object_id in object_ids[1:]:
+        # Overlay color on  binary mask
+        foreground = image*alpha + np.ones(image.shape)*(1-alpha) * np.array(colors[object_id])
+        binary_mask = mask == object_id
+
+        # Compose image
+        im_overlay[binary_mask] = foreground[binary_mask]
+
+        # countours = skimage.morphology.binary.binary_dilation(binary_mask) - binary_mask
+        countours = binary_dilation(binary_mask) ^ binary_mask
+        # countours = cv2.dilate(binary_mask, cv2.getStructuringElement(cv2.MORPH_CROSS,(3,3))) - binary_mask
+        im_overlay[countours, :] = 0
+
+    return im_overlay.astype(image.dtype)
+#-------------------------------------------------------------------------------------------------

@@ -60,10 +60,6 @@ class ReferDataset(data.Dataset):
 
             for i, (el, sent_id) in enumerate(zip(ref['sentences'], ref['sent_ids'])):
                 input_ids = self.tokenizer(el['raw']) # 1 x 77
-                
-                # with torch.no_grad():
-                #     input_ids = model.encode_text(input_ids)
-
                 sentences_for_ref.append(input_ids)
 
             self.input_ids.append(sentences_for_ref)
@@ -78,6 +74,15 @@ class ReferDataset(data.Dataset):
 
         img = Image.open(os.path.join(self.refer.IMAGE_DIR, this_img['file_name'])).convert("RGB")
         img = np.array(img)
+
+        #--------------------------------------------------------------
+        # for visualization
+        img_trans = T.Compose([T.ResizeLongestSide(args.img_size),
+                               T.ToTensor(),
+                               T.Pad(args.img_size)
+                              ])
+        original_img = img_trans(img)
+        #--------------------------------------------------------------
 
         original_size = torch.Tensor(img.shape[:2])
         input_size = torch.Tensor(T.ResizeLongestSide.get_preprocess_shape(img.shape[0], 
@@ -111,7 +116,13 @@ class ReferDataset(data.Dataset):
             tensor_embeddings = self.input_ids[index][choice_sent]
             # tensor_embeddings = self.input_ids[index][choice_sent].squeeze(0)
 
-        return img.float(), target.float(), tensor_embeddings, original_size, input_size
+        # return img.float(), target.float(), tensor_embeddings, original_size, input_size 
+
+        #-----------------------------------------------------------------------------------------------
+        # for visualization
+        return img.float(), target.float(), tensor_embeddings, original_size, input_size, original_img
+        #-----------------------------------------------------------------------------------------------
+
 
 # import torch.distributed as dist
 # import torch.backends.cudnn as cudnn

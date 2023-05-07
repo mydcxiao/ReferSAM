@@ -15,6 +15,13 @@ class Criterion(nn.Module):
         self.weight_dice = weight_dice
         self.weight_iou = weight_iou
 
+
+    # def loss_masks(self, input, target):
+    #     target1 = target.unsqueeze(1)
+    #     target_rep = torch.repeat_interleave(target1, input.size(1), dim=1)
+    #     return F.binary_cross_entropy_with_logits(input, target_rep) / self.num_masks
+
+
     def loss_masks(self, 
                    src_masks, 
                    target_masks, 
@@ -28,8 +35,10 @@ class Criterion(nn.Module):
         # upsample predictions to the target size
         num_multimask = src_masks.size(1)
         target_masks = target_masks.flatten(1)
-        wf = self.weight_focal / (self.weight_focal + self.weight_dice)
-        wd = 1 - wf
+        # wf = self.weight_focal / (self.weight_focal + self.weight_dice)
+        # wd = 1 - wf
+        wf = self.weight_focal
+        wd = self.weight_dice
         loss_masks_list = []
         for i in range(num_multimask):
             src_mask = src_masks[:, i, :, :].flatten(1)
@@ -37,8 +46,8 @@ class Criterion(nn.Module):
             loss_masks_list.append(wf * self.sigmoid_focal_loss(src_mask, target_masks) \
                                   + wd * self.dice_loss(src_mask, target_masks))
         loss_masks_tensor = torch.stack(loss_masks_list, dim=1)
-        loss_masks, _ = loss_masks_tensor.min(1)
-        loss_masks = loss_masks.sum() / self.num_masks
+        loss_masks_min, _ = loss_masks_tensor.min(1)
+        loss_masks = loss_masks_min.sum() / self.num_masks
         return loss_masks
 
 
@@ -69,7 +78,7 @@ class Criterion(nn.Module):
                            inputs, 
                            targets, 
                         #    num_masks, 
-                           alpha: float = 0.25, 
+                           alpha: float = -1, #0.25, 
                            gamma: float = 2,
                            ):
         """

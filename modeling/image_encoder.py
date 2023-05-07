@@ -102,6 +102,8 @@ class ImageEncoderViT(nn.Module):
             ),
             LayerNorm2d(out_chans),
         )
+        
+        self._freeze()
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         x = self.patch_embed(x)
@@ -114,6 +116,19 @@ class ImageEncoderViT(nn.Module):
         x = self.neck(x.permute(0, 3, 1, 2))
 
         return x
+
+    #------------------------------------------------------------
+    # code to freeze image encoder
+    def train(self, mode: bool = True):
+        super().train(mode)
+        self._freeze()
+        return self
+
+    def _freeze(self):
+        super().train(mode=False)
+        for p in self.parameters():
+            p.requires_grad = False
+    #------------------------------------------------------------
 
 
 class Block(nn.Module):

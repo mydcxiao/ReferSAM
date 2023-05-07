@@ -216,7 +216,7 @@ def init_distributed_mode(args):
     torch.distributed.barrier()
     setup_for_distributed(is_main_process())
 
-    # if args.output_dir:
-    #     mkdir(args.output_dir)
-    # if args.model_id:
-    #     mkdir(os.path.join('./models/', args.model_id))
+    if args.ck_dir:
+        mkdir(args.ck_dir)
+    if args.log_dir:
+        mkdir(args.log_dir)

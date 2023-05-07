@@ -121,7 +121,7 @@ def _build_m(
             iou_head_hidden_dim=256,
         ),
     )
-    # sam.eval()
+    
     if resume is not None:
         with open(resume, "rb") as f:
             state_dict = torch.load(f)

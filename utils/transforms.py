@@ -8,6 +8,8 @@ import numpy as np
 import torch
 from torch.nn import functional as F
 from torchvision.transforms.functional import resize, to_pil_image  # type: ignore
+from torchvision.transforms import InterpolationMode
+from PIL import Image
 
 from copy import deepcopy
 from typing import Tuple, List
@@ -34,7 +36,8 @@ class ResizeLongestSide:
         Expects a numpy array with shape HxWxC in uint8 format.
         """
         target_size = self.get_preprocess_shape(image.shape[0], image.shape[1], self.target_length)
-        return np.array(resize(to_pil_image(image), target_size))
+        return np.array(resize(to_pil_image(image), target_size)) if len(image.shape) == 3 \
+               else np.array(resize(to_pil_image(image), target_size, interpolation=InterpolationMode.NEAREST))
     @staticmethod
     def get_preprocess_shape(oldh: int, oldw: int, long_side_length: int) -> Tuple[int, int]:
         """
@@ -50,8 +53,8 @@ class Normalize:
     def __init__(self, 
                  pixel_mean: List[float] = [123.675, 116.28, 103.53],
                  pixel_std: List[float] = [58.395, 57.12, 57.375]):
-        self.pixel_mean = pixel_mean
-        self.pixel_std = pixel_std
+        self.pixel_mean = np.array(pixel_mean)
+        self.pixel_std = np.array(pixel_std)
     
     def __call__(self, image):
         return self.preprocess(image)
@@ -60,7 +63,7 @@ class Normalize:
         """Normalize pixel values."""
         # Normalize colors
         input_image = (input_image - self.pixel_mean) / self.pixel_std
-        return input_image # C x H x W
+        return input_image # H x W x C
 
 class ToTensor:
     def __call__(self, image: np.ndarray):

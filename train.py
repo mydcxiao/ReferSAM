@@ -5,12 +5,11 @@ import time
 import torch
 import torch.utils.data
 from torch import nn
+from torch.utils.tensorboard import SummaryWriter
+import torchvision
 
 from functools import reduce
 import operator
-# from bert.modeling_bert import BertModel
-
-import torchvision
 
 from utils import transforms as T
 from utils import utils
@@ -22,7 +21,7 @@ import gc
 from collections import OrderedDict
 
 from criterion import Criterion
-from engine import train_one_epoch, eval_batch
+from engine import train_one_epoch, eval_train
 from build_m import m_model_registry
 
 
@@ -53,12 +52,13 @@ def main(args):
     image_transforms, target_transforms = get_transform(args)
 
     dataset = get_dataset(#"train",
-                          'testB',
+                          args.split,
                           image_transforms=image_transforms,
                           target_transforms=target_transforms,
                           args=args)
-    dataset_test = get_dataset(#"val",
-                               'testB',
+    dataset_test = get_dataset(
+                               "val",
+                            #    args.split,
                                image_transforms=image_transforms,
                                target_transforms=target_transforms,
                                args=args)
@@ -69,23 +69,30 @@ def main(args):
     global_rank = utils.get_rank()
     train_sampler = torch.utils.data.distributed.DistributedSampler(dataset, num_replicas=num_tasks, rank=global_rank,
                                                                     shuffle=True)
-    test_sampler = torch.utils.data.SequentialSampler(dataset_test)
+    
+    # test_sampler = torch.utils.data.SequentialSampler(dataset_test)
+    test_sampler = torch.utils.data.distributed.DistributedSampler(dataset_test, num_replicas=num_tasks, rank=global_rank,
+                                                                   shuffle=False)
 
     # data loader
     data_loader = torch.utils.data.DataLoader(
         dataset, batch_size=args.batch_size,
         sampler=train_sampler, num_workers=args.workers, pin_memory=args.pin_mem, drop_last=True)
 
+    # data_loader_test = torch.utils.data.DataLoader(
+    #     dataset_test, batch_size=1, sampler=test_sampler, num_workers=args.workers)
+
     data_loader_test = torch.utils.data.DataLoader(
-        dataset_test, batch_size=1, sampler=test_sampler, num_workers=args.workers)
+        dataset_test, batch_size=args.batch_size, 
+        sampler=test_sampler, num_workers=args.workers, pin_memory=args.pin_mem, drop_last=True)
 
     # model initialization
     print(args.model)
     model = m_model_registry[args.model](resume=None,
                                          ck_image_encoder=args.ck_image_encoder,
                                          ck_prompt_encoder=args.ck_prompt_encoder,
-                                        #  ck_mask_decoder=args.ck_mask_decoder)
-                                         ck_mask_decoder=None)
+                                         ck_mask_decoder=args.ck_mask_decoder)
+                                        #  ck_mask_decoder=None)
     # model = torch.nn.SyncBatchNorm.convert_sync_batchnorm(model)
     model.cuda()
     model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[args.local_rank], find_unused_parameters=True)
@@ -108,6 +115,7 @@ def main(args):
         single_model.load_state_dict(checkpoint['model'])
 
     # parameters to optimize
+    # TODO layer-wise learning rate decay   
     # layer_ld = args.layer_ld
     # lr = args.lr
 
@@ -122,6 +130,9 @@ def main(args):
         {'params': params},
     ]
 
+    # TODO: dropout
+    # TODO: droppath
+    
     # optimizer
     optimizer = torch.optim.AdamW(params_to_optimize,
                                   lr=args.lr,
@@ -149,13 +160,22 @@ def main(args):
         resume_epoch = checkpoint['epoch']
     else:
         resume_epoch = -999
+
+    # SummaryWriter
+    writer = None
+    if args.log_dir:
+        utils.mkdir(os.path.join(args.log_dir, '{}_{}_train/'.format(args.model, args.dataset)))
+        writer = SummaryWriter(os.path.join(args.log_dir,
+                                            '{}_{}_train/'.format(args.model, args.dataset)))
     
     # TODO --debug training loops 
     for epoch in range(max(0, resume_epoch+1), args.epochs):
         data_loader.sampler.set_epoch(epoch)
         train_one_epoch(model, criterion, optimizer, data_loader, lr_scheduler, epoch, args.print_freq,
-                    iterations)
-        iou, overallIoU = eval_batch(model, data_loader_test)
+                    iterations, args.multimask, writer)
+
+        if epoch % 5 == 0:
+            iou, overallIoU = eval_train(model, data_loader_test, epoch, args.multimask, writer)
 
         print('Average object IoU {}'.format(iou))
         print('Overall IoU {}'.format(overallIoU))
@@ -169,7 +189,7 @@ def main(args):
                             'args': args,
                             'lr_scheduler': lr_scheduler.state_dict()}
 
-            utils.save_on_master(dict_to_save, os.path.join('./checkpoints/',
+            utils.save_on_master(dict_to_save, os.path.join(args.ck_dir,
                                                             '{}_best_{}.pth'.format(args.model, args.dataset)))
 
             best_oIoU = overallIoU
@@ -178,6 +198,9 @@ def main(args):
     total_time = time.time() - start_time
     total_time_str = str(datetime.timedelta(seconds=int(total_time)))
     print('Training time {}'.format(total_time_str))
+    if writer:
+        writer.flush()
+        writer.close()
 
 
 if __name__ == "__main__":
