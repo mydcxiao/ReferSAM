@@ -16,12 +16,6 @@ class Criterion(nn.Module):
         self.weight_iou = weight_iou
 
 
-    # def loss_masks(self, input, target):
-    #     target1 = target.unsqueeze(1)
-    #     target_rep = torch.repeat_interleave(target1, input.size(1), dim=1)
-    #     return F.binary_cross_entropy_with_logits(input, target_rep) / self.num_masks
-
-
     def loss_masks(self, 
                    src_masks, 
                    target_masks, 

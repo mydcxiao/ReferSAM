@@ -8,6 +8,7 @@ import numpy as np
 from PIL import Image
 import torchvision.transforms.functional as TF
 import random
+from torch import nn
 
 import h5py
 from refer.refer import REFER
@@ -16,6 +17,8 @@ from args import get_parser
 
 from utils import utils
 from utils import transforms as T
+
+from collections import defaultdict
 
 
 import open_clip
@@ -32,7 +35,8 @@ class ReferDataset(data.Dataset):
                  image_transforms=None,
                  target_transforms=None,
                  split='train',
-                 eval_mode=False):
+                 eval_mode=False,
+                 ):
 
         self.image_transforms = image_transforms
         self.target_transforms = target_transforms
@@ -51,6 +55,9 @@ class ReferDataset(data.Dataset):
 
         self.eval_mode = eval_mode
 
+        self.last_pred = None
+        self.curr_pred = dict()
+
         # if we are testing on a dataset, test all sentences of an object;
         # o/w, we are validating during training, randomly sample one sentence for efficiency
         for r in ref_ids:
@@ -63,6 +70,17 @@ class ReferDataset(data.Dataset):
                 sentences_for_ref.append(input_ids)
 
             self.input_ids.append(sentences_for_ref)
+
+    def set_curr_pred(self, index, mask):
+        self.curr_pred[index] = mask
+    
+    def set_batch_curr_pred(self, indices, masks):
+        for i, index in enumerate(indices.tolist()):
+            self.set_curr_pred(index, masks[i])
+
+    def update_last_pred(self):
+        self.last_pred = self.curr_pred
+        self.curr_pred = dict()
 
     def __len__(self):
         return len(self.ref_ids)
@@ -77,9 +95,9 @@ class ReferDataset(data.Dataset):
 
         #--------------------------------------------------------------
         # for visualization
-        img_trans = T.Compose([T.ResizeLongestSide(args.img_size),
+        img_trans = T.Compose([T.ResizeLongestSide(args.img_size // 4),
                                T.ToTensor(),
-                               T.Pad(args.img_size)
+                               T.Pad(args.img_size // 4)
                               ])
         original_img = img_trans(img)
         #--------------------------------------------------------------
@@ -87,7 +105,7 @@ class ReferDataset(data.Dataset):
         original_size = torch.Tensor(img.shape[:2])
         input_size = torch.Tensor(T.ResizeLongestSide.get_preprocess_shape(img.shape[0], 
                                                                            img.shape[1], 
-                                                                           args.img_size))
+                                                                           args.img_size // 4))
 
         ref = self.refer.loadRefs(this_ref_id)
 
@@ -104,7 +122,6 @@ class ReferDataset(data.Dataset):
             target = self.target_transforms(target)
         
         if self.eval_mode:
-            # TODO need modify in the future--dimensionality problem
             embedding = []
             for s in range(len(self.input_ids[index])):
                 e = self.input_ids[index][s]
@@ -115,13 +132,17 @@ class ReferDataset(data.Dataset):
             choice_sent = np.random.choice(len(self.input_ids[index]))
             tensor_embeddings = self.input_ids[index][choice_sent]
             # tensor_embeddings = self.input_ids[index][choice_sent].squeeze(0)
+        
+        if self.last_pred:
+            if index in self.last_pred:
+                last_mask = self.last_pred[index]
+            else:
+                last_mask = torch.zeros_like(list(self.last_pred.values())[0])
+            
+            return img, target.float(), tensor_embeddings, last_mask, index, original_size, input_size, original_img
 
-        # return img.float(), target.float(), tensor_embeddings, original_size, input_size 
-
-        #-----------------------------------------------------------------------------------------------
-        # for visualization
-        return img.float(), target.float(), tensor_embeddings, original_size, input_size, original_img
-        #-----------------------------------------------------------------------------------------------
+        return img, target.float(), tensor_embeddings, index, original_size, input_size, original_img
+        
 
 
 # import torch.distributed as dist
@@ -173,6 +194,16 @@ class ReferDataset(data.Dataset):
 # print(next(iter(data_loader))[2].size()) 
 # print(next(iter(data_loader))[3].size()) 
 # print(next(iter(data_loader))[4].size())
+# print(next(iter(data_loader))[5].size())
+# print(next(iter(data_loader))[6].size())
+
+# print(next(iter(data_loader))[0].dtype)
+# print(next(iter(data_loader))[1].dtype) 
+# print(next(iter(data_loader))[2].dtype) 
+# print(next(iter(data_loader))[3].dtype) 
+# print(next(iter(data_loader))[4].dtype)
+# print(next(iter(data_loader))[5].dtype)
+# print(next(iter(data_loader))[6].dtype)
 
 
 # print(next(iter(data_loader))[1])

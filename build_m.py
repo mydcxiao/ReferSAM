@@ -104,9 +104,10 @@ def _build_m(
             embed_dim=prompt_embed_dim,
             model_name='ViT-L-14-336',
             pretrained='openai',
-            input_dim=768,
+            text_dim=768,
             depth=3,
             image_embedding_size=(image_embedding_size, image_embedding_size),
+            mask_in_chans=16,
         ),
         mask_decoder=MaskDecoder(
             num_multimask_outputs=3,

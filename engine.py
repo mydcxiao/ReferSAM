@@ -7,6 +7,7 @@ import torch.utils.data
 from torch import nn
 
 import torchvision
+from torchvision.transforms.functional import resize, to_pil_image 
 
 from utils import transforms as T
 from utils import utils
@@ -36,12 +37,13 @@ def IoU(pred_seg, gd_seg):
     return I, U
 
 
-def train_one_epoch(model, criterion, optimizer, data_loader, lr_scheduler, epoch, print_freq,
-                    iterations, multimask,
+def train_one_epoch(model, criterion, optimizer, data_loader, lr_scheduler, 
+                    epoch, print_freq, iterations, 
+                    multimask,
                     writer = None,
                     ):
     model.train()
-    # TODO check if below code works for freezing
+    # TODO check if below code works for freezing in DDP
     #----------------------------------------------------------------
     # model.module.image_encoder.eval()
     # model.module.image_encoder.requires_grad_(False)
@@ -49,18 +51,6 @@ def train_one_epoch(model, criterion, optimizer, data_loader, lr_scheduler, epoc
     # model.module.prompt_encoder.text_model.requires_grad_(False)
     #----------------------------------------------------------------
     criterion.train()
-    #-----------------------------------------------------------------
-    # check the frozen part
-    # print(model.module.image_encoder.training)
-    # print(model.module.image_encoder.pos_embed.requires_grad)
-    # print(list(model.module.image_encoder.parameters())[0].requires_grad)
-    # print(model.module.prompt_encoder.text_model.training)
-    # print(list(model.module.prompt_encoder.layer.parameters())[0].requires_grad)
-    # print(list(model.module.prompt_encoder.text_model.parameters())[0].requires_grad)
-    # print(model.module.prompt_encoder.pe_layer.positional_encoding_gaussian_matrix.requires_grad)
-    # print(list(model.module.mask_decoder.output_upscaling.parameters())[0].requires_grad)
-    # print(list(model.module.mask_decoder.output_hypernetworks_mlps[0].parameters())[0].requires_grad)
-    #-----------------------------------------------------------------
     metric_logger = utils.MetricLogger(delimiter="  ")
     metric_logger.add_meter('lr', utils.SmoothedValue(window_size=1, fmt='{value}'))
     header = 'Epoch: [{}]'.format(epoch)
@@ -69,44 +59,61 @@ def train_one_epoch(model, criterion, optimizer, data_loader, lr_scheduler, epoc
 
     for data in metric_logger.log_every(data_loader, print_freq, header):
         total_its += 1
-        # image, target, sentences, original_size, input_size = data
-        # image, target, sentences, original_size, input_size = image.cuda(non_blocking=True),\
-        #                                                       target.cuda(non_blocking=True),\
-        #                                                       sentences.cuda(non_blocking=True),\
-        #                                                       original_size.cuda(non_blocking=True),\
-        #                                                       input_size.cuda(non_blocking=True)
-                                                            
-        #-----------------------------------------------------------------------------------------------
-        # for visualization
-        image, target, sentences, original_size, input_size, original_img = data
-        image, target, sentences, original_size, input_size = image.cuda(non_blocking=True),\
-                                                              target.cuda(non_blocking=True),\
-                                                              sentences.cuda(non_blocking=True),\
-                                                              original_size.cuda(non_blocking=True),\
-                                                              input_size.cuda(non_blocking=True)#, \
-                                                              #original_img.cuda(non_blocking=True)
-        #-----------------------------------------------------------------------------------------------
+        last_mask = None
+        if epoch == 0:
+            image, target, sentences, index, _, _, _ = data
+            image, target, sentences, index = image.cuda(non_blocking=True),\
+                                            target.cuda(non_blocking=True),\
+                                            sentences.cuda(non_blocking=True),\
+                                            index.cuda(non_blocking=True)
+        else:
+            image, target, sentences, last_mask, index, _, _, _ = data
+            image, target, sentences, last_mask, index = image.cuda(non_blocking=True),\
+                                                        target.cuda(non_blocking=True),\
+                                                        sentences.cuda(non_blocking=True),\
+                                                        last_mask.cuda(non_blocking=True),\
+                                                        index.cuda(non_blocking=True)
 
-        mask_logit, iou_pred = model(image, sentences, multimask_output=multimask)
 
-        mask = torch.where(mask_logit > 0.0, 1, 0)
+        low_res_logits, iou_pred = model(image, sentences, last_mask, multimask_output=multimask)
 
-        # print(mask.requires_grad)
+        low_res_masks = torch.where(low_res_logits > 0.0, 1, 0)
 
-        iou_gt, _, _ = computeIoU(mask, target) #TODO check if this is correct
+        iou_gt, _, _ = computeIoU(low_res_masks, target) #TODO check if this is correct
 
-        loss = criterion(mask_logit, target, iou_pred, iou_gt) #TODO check if this is correct
+        _, idx = iou_gt.max(1)
+
+        max_logits = low_res_logits.clone().detach()[range(len(idx)), idx].unsqueeze(1)
+
+        world_size = utils.get_world_size()
+        global_index_list = [torch.zeros_like(index, dtype=index.dtype) for _ in range(world_size)]
+        global_pred_list = [torch.zeros_like(max_logits, dtype=max_logits.dtype) for _ in range(world_size)]
+
+        dist.barrier()
+        dist.all_gather(global_index_list, index)
+        dist.all_gather(global_pred_list, max_logits)
+
+        global_index = torch.cat(global_index_list, dim=0)
+        global_pred = torch.cat(global_pred_list, dim=0)
+
+        data_loader.sampler.dataset.set_batch_curr_pred(global_index.cpu(), global_pred.cpu())
+
+
+        loss = criterion(low_res_logits, target, iou_pred, iou_gt) #TODO check if this is correct
 
         optimizer.zero_grad()  # set_to_none=True is only available in pytorch 1.6+
         loss.backward()
         #--------------------------------
         # check gradient
-        # for n, p in model.module.named_parameters():
-        #     if p.grad is not None:
-        #         print(n,':', p.grad)
+        # if epoch == 1:
+        #     for n, p in model.module.named_parameters():
+        #         if p.grad is not None:
+        #             print(n)
+                # print(n,':', p.grad)
         #--------------------------------
         optimizer.step()
-        lr_scheduler.step()
+        if epoch == 0:
+            lr_scheduler.step()
 
         torch.cuda.synchronize()
         train_loss += loss.item()
@@ -120,7 +127,9 @@ def train_one_epoch(model, criterion, optimizer, data_loader, lr_scheduler, epoc
                                iterations + len(data_loader) * epoch)
         #-----------------------------------------------------------------------------------------------
 
-        del image, target, sentences, original_size, input_size, loss, mask, iou_pred, data
+        del image, target, sentences, last_mask, index, data, \
+            low_res_logits, iou_pred, low_res_masks, iou_gt, idx, \
+            max_logits, global_index_list, global_pred_list, global_index, global_pred, loss
 
         gc.collect()
         torch.cuda.empty_cache()
@@ -131,11 +140,13 @@ def train_one_epoch(model, criterion, optimizer, data_loader, lr_scheduler, epoc
     dist.barrier()
     dist.all_reduce(train_loss)
     train_loss = train_loss.item()
-    print("Train loss: {:4f} ({:4f})".format(metric_logger.meters['loss'].total, train_loss))
+    print("Train loss: {:4f} ({:4f})\n".format(metric_logger.meters['loss'].total, train_loss))
     #-----------------------------------------------------------------------------------------------
     # for summary writer
     if writer is not None:
         writer.add_scalar('train_per_epoch/loss', train_loss, epoch)
+    #-----------------------------------------------------------------------------------------------
+
 
 
 def eval_train(model, data_loader, epoch, multimask,
@@ -157,34 +168,24 @@ def eval_train(model, data_loader, epoch, multimask,
     with torch.no_grad():
         for data in metric_logger.log_every(data_loader, 50, header):
             total_its += 1
-            # image, target, sentences, original_size, input_size = data
-            # image, target, sentences, original_size, input_size = image.cuda(non_blocking=True),\
-            #                                                       target.cuda(non_blocking=True),\
-            #                                                       sentences.cuda(non_blocking=True),\
-            #                                                       original_size.cuda(non_blocking=True),\
-            #                                                       input_size.cuda(non_blocking=True)
+            image, target, sentences, _, _, _, original_img = data
 
-            #-----------------------------------------------------------------------------------------------
-            # for visualization
-            image, target, sentences, original_size, input_size, original_img = data
-            image, target, sentences, original_size, input_size = image.cuda(non_blocking=True),\
-                                                                target.cuda(non_blocking=True),\
-                                                                sentences.cuda(non_blocking=True),\
-                                                                original_size.cuda(non_blocking=True),\
-                                                                input_size.cuda(non_blocking=True)#, \
-                                                                #original_img.cuda(non_blocking=True)
-            #-----------------------------------------------------------------------------------------------
+            image, target, sentences = image.cuda(non_blocking=True),\
+                                       target.cuda(non_blocking=True),\
+                                       sentences.cuda(non_blocking=True),\
 
-            mask, iou_pred = model(image, sentences, multimask_output=multimask)
+            low_res_logits, iou_pred = model(image, sentences, None, multimask_output=multimask)
 
-            iou, I, U = computeIoU(mask, target) # B x C
+            low_res_masks = torch.where(low_res_logits > 0.0, 1, 0)
+
+            iou, I, U = computeIoU(low_res_masks, target) # B x C
 
             iou, idx = iou.max(1)
             I = I[range(len(idx)), idx]
             U = U[range(len(idx)), idx]
 
-            max_iou_pred_gt = iou_pred[range(len(idx)), idx]
-            max_iou_pred, _ = iou_pred.max(1)
+            # max_iou_pred_gt = iou_pred[range(len(idx)), idx]
+            # max_iou_pred, _ = iou_pred.max(1)
 
             acc_ious += iou.mean().item()
             mean_IoU.append(iou.mean().item())
@@ -203,7 +204,7 @@ def eval_train(model, data_loader, epoch, multimask,
             if writer is not None:
                 img_ndarray = original_img.permute(0,2,3,1).numpy().astype(np.uint8)
                 target1 = target.cpu().data.numpy().astype(np.uint8)
-                target2 = mask[range(len(idx)), idx].squeeze(1).cpu().data.numpy()
+                target2 = low_res_masks[range(len(idx)), idx].squeeze(1).cpu().data.numpy()
                 target2 = target2.astype(np.uint8)
                 for i in range(img_ndarray.shape[0]):
                     img = img_ndarray[i, :, : ,:]
@@ -213,24 +214,24 @@ def eval_train(model, data_loader, epoch, multimask,
                     visualization2 = overlay_davis(img, mask2)
                     visualization = 0.5 * visualization1 + 0.5 * visualization2
                     visualization = visualization.astype(img.dtype)
-                    writer.add_image(f'eval_val/{utils.get_rank():d}_{total_its:d}_{i:d}_{iou[i].item():.2f}_{max_iou_pred[i].item():.2f}_{max_iou_pred_gt[i].item():.2f}'
+                    writer.add_image(f'eval_val/{utils.get_rank():d}_{total_its:d}_{i:d}'
                                      , visualization, epoch, dataformats='HWC')
             #-----------------------------------------------------------------------------------------------
 
             torch.cuda.synchronize()
-        
+
+            del image, target, sentences, data, \
+                low_res_logits, iou_pred, low_res_masks, iou, I, U, idx #, \
+                # max_iou_pred, max_iou_pred_gt
+            
+            gc.collect()
+            torch.cuda.empty_cache()
+            torch.cuda.synchronize()
+
         iou = acc_ious / total_its
 
     mean_IoU = np.array(mean_IoU)
     mIoU = np.mean(mean_IoU)
-
-    #------------------------------------------------------------------------------------------------
-    # output validation iou in summary writer
-    # if writer is not None:
-    #     writer.add_scalar(f'eval_val/{utils.get_rank():d}_mIoU', mIoU * 100., epoch)
-    #     writer.add_scalar(f'eval_val/{utils.get_rank():d}_average_IoU', 100 * iou, epoch)
-    #     writer.add_scalar(f'eval_val/{utils.get_rank():d}_overall_IoU', cum_I * 100. / cum_U, epoch)
-    #------------------------------------------------------------------------------------------------
 
     t = torch.tensor([iou, mIoU, cum_I, cum_U, seg_total], dtype=torch.float64, device='cuda')
     seg = torch.tensor(seg_correct, dtype=torch.int32, device='cuda')
@@ -265,6 +266,7 @@ def eval_train(model, data_loader, epoch, multimask,
     return 100 * iou, 100 * cum_I / cum_U
 
 
+
 def eval_test(model, data_loader, device, multimask, writer=None):
     model.eval()
     metric_logger = utils.MetricLogger(delimiter="  ")
@@ -281,42 +283,43 @@ def eval_test(model, data_loader, device, multimask, writer=None):
 
     with torch.no_grad():
         for data in metric_logger.log_every(data_loader, 100, header):
-            image, target, sentences, original_size, input_size, original_img = data
-            image, target, sentences, original_size, input_size = image.to(device), target.to(device), \
-                                                                  sentences.to(device), original_size.to(device), \
-                                                                  input_size.to(device)
+            image, target, sentences, _, original_size, input_size, original_img = data
+            image, target, sentences = image.to(device), target.to(device), \
+                                       sentences.to(device)
             
             target = target.cpu().data.numpy()
             iterations += 1
 
             for j in range(sentences.size(-1)):
-                masks, iou_pred = model(image, sentences[:, :, :, j], multimask_output=multimask)
+                low_res_logits, iou_pred = model(image, sentences[:, :, :, j], None, multimask_output=multimask)
+                low_res_masks = torch.where(low_res_logits > 0.0, 1, 0)
                 max_iou_pred, idx = iou_pred.max(1)
-                output_mask = masks[range(len(idx)), idx, :, :]
-                output_mask = output_mask.cpu().data.numpy()
+                low_res_masks = low_res_masks[range(len(idx)), idx, :, :]
+                low_res_masks = low_res_masks.cpu().data.numpy()
                 max_iou_pred = max_iou_pred.item()
 
-                I, U = IoU(output_mask, target)
-                if U == 0:
-                    this_iou = 0.0
-                else:
-                    this_iou = I*1.0/U
+                I, U = IoU(low_res_masks, target)
+                this_iou = 0.0 if U == 0 else I*1.0/U
                 mean_IoU.append(this_iou)
                 #----------------------------------------------------
                 # output images in summary writer
                 if writer is not None:
                     img_ndarray = original_img.permute(0,2,3,1).numpy().astype(np.uint8)
                     target1 = target.astype(np.uint8)
-                    target2 = output_mask
+                    target2 = low_res_masks
                     target2 = target2.astype(np.uint8)
                     for i in range(img_ndarray.shape[0]):
                         img = img_ndarray[i, :, : ,:]
                         mask1 = target1[i]
                         mask2 = target2[i]
+                        i_size = input_size[i].tolist()
+                        o_size = tuple(original_size[i].tolist())
                         visualization1 = overlay_davis(img, mask1, colors=[[0,0,0],[0,255,0]])
                         visualization2 = overlay_davis(img, mask2)
                         visualization = 0.5 * visualization1 + 0.5 * visualization2
                         visualization = visualization.astype(img.dtype)
+                        visualization = visualization[ : i_size[0], : i_size[1], :]
+                        visualization = np.array(resize(to_pil_image(visualization), o_size))
                         writer.add_image(f'eval_test/{iterations:d}_{this_iou:.2f}_{max_iou_pred:.2f}', visualization, iterations,
                                         dataformats='HWC')
                 #----------------------------------------------------
@@ -329,8 +332,9 @@ def eval_test(model, data_loader, device, multimask, writer=None):
 
                 pred_iou += max_iou_pred
         
-            del image, target, sentences, original_size, input_size, \
-                masks, iou_pred, max_iou_pred, idx, output_mask
+            del image, target, sentences, data, \
+                original_size, input_size, original_img, \
+                low_res_logits, iou_pred, low_res_masks, max_iou_pred, idx, I, U, this_iou
 
         pred_iou = pred_iou / seg_total
 
@@ -348,7 +352,6 @@ def eval_test(model, data_loader, device, multimask, writer=None):
 
 
 
-#-------------------------------------------------------------------------------------------------
 # overlay mask and image for visualization
 # show/save results
 def overlay_davis(image, mask, colors=[[0, 0, 0], [255, 0, 0]], cscale=1, alpha=0.4):
@@ -374,4 +377,3 @@ def overlay_davis(image, mask, colors=[[0, 0, 0], [255, 0, 0]], cscale=1, alpha=
         im_overlay[countours, :] = 0
 
     return im_overlay.astype(image.dtype)
-#-------------------------------------------------------------------------------------------------

@@ -64,9 +64,10 @@ def main(args):
 
     writer = None
     if args.log_dir:
-        utils.mkdir(os.path.join(args.log_dir, '{}_{}_test/'.format(args.model, args.dataset)))
-        writer = SummaryWriter(os.path.join(args.log_dir,
-                                            '{}_{}_test/'.format(args.model, args.dataset)))
+        path = os.path.join(args.log_dir, '{}_{}_test/{}/'.format(args.model, args.dataset,
+                                 datetime.datetime.now().strftime('%Y-%m-%d_%H:%M')))
+        utils.mkdir(path)
+        writer = SummaryWriter(path)
 
     print("Processing...")
 
@@ -75,7 +76,7 @@ def main(args):
     if writer:
         writer.flush()
         writer.close()
-        
+
     print("Done!")
 
 

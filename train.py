@@ -40,9 +40,9 @@ def get_transform(args):
                         T.ToTensor(),
                         T.Pad(args.img_size)
                         ]
-    target_transforms = [T.ResizeLongestSide(args.img_size),
+    target_transforms = [T.ResizeLongestSide(args.img_size // 4),
                          T.ToTensor(),
-                         T.Pad(args.img_size)
+                         T.Pad(args.img_size // 4)
                          ]
     
     return T.Compose(image_transforms), T.Compose(target_transforms)
@@ -51,17 +51,20 @@ def get_transform(args):
 def main(args):
     image_transforms, target_transforms = get_transform(args)
 
-    dataset = get_dataset(#"train",
+    dataset = get_dataset(
+                        #   "train",
                           args.split,
                           image_transforms=image_transforms,
                           target_transforms=target_transforms,
-                          args=args)
+                          args=args
+                          )
     dataset_test = get_dataset(
                                "val",
-                            #    args.split,
+                            #    "testB",
                                image_transforms=image_transforms,
                                target_transforms=target_transforms,
-                               args=args)
+                               args=args,
+                               )
 
     # batch sampler
     print(f"local rank {args.local_rank} / global rank {utils.get_rank()} successfully built train dataset.")
@@ -70,7 +73,9 @@ def main(args):
     train_sampler = torch.utils.data.distributed.DistributedSampler(dataset, num_replicas=num_tasks, rank=global_rank,
                                                                     shuffle=True)
     
+
     # test_sampler = torch.utils.data.SequentialSampler(dataset_test)
+
     test_sampler = torch.utils.data.distributed.DistributedSampler(dataset_test, num_replicas=num_tasks, rank=global_rank,
                                                                    shuffle=False)
 
@@ -92,10 +97,11 @@ def main(args):
                                          ck_image_encoder=args.ck_image_encoder,
                                          ck_prompt_encoder=args.ck_prompt_encoder,
                                          ck_mask_decoder=args.ck_mask_decoder)
-                                        #  ck_mask_decoder=None)
+
     # model = torch.nn.SyncBatchNorm.convert_sync_batchnorm(model)
     model.cuda()
     model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[args.local_rank], find_unused_parameters=True)
+    # model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[args.local_rank])
     single_model = model.module
 
     # criterion for training 
@@ -122,7 +128,7 @@ def main(args):
     params = list()
     # layer_names = list()
     for name, m in single_model.named_parameters():
-        if 'prompt_encoder.layer' in name or 'mask_decoder' in name:
+        if 'prompt_encoder.layer' in name or 'prompt_encoder.mask_downscaling' in name or 'prompt_encoder.no_mask_embed' in name or 'mask_decoder' in name:
             params.append(m)
 
 
@@ -132,7 +138,7 @@ def main(args):
 
     # TODO: dropout
     # TODO: droppath
-    
+
     # optimizer
     optimizer = torch.optim.AdamW(params_to_optimize,
                                   lr=args.lr,
@@ -141,12 +147,16 @@ def main(args):
                                   )
 
     # learning rate scheduler
-    lr_scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer,
+    lr_scheduler1 = torch.optim.lr_scheduler.LambdaLR(optimizer,
                                                     #  lambda x: (1 - x / (len(data_loader) * args.epochs)) ** 0.9 \
                                                      lambda x: x / args.warmup if x < args.warmup else \
                                                      1 if x < len(data_loader) * args.epochs * 0.66 else \
                                                      0.1 if x < len(data_loader) * args.epochs * 0.96 else \
                                                      0.01)
+
+    lr_scheduler2 = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, args.epochs, eta_min=args.lr_min)
+
+    lr_scheduler = torch.optim.lr_scheduler.SequentialLR(optimizer, [lr_scheduler1, lr_scheduler2], milestones=[len(data_loader)])
 
     # housekeeping
     start_time = time.time()
@@ -157,25 +167,39 @@ def main(args):
     if args.resume:
         optimizer.load_state_dict(checkpoint['optimizer'])
         lr_scheduler.load_state_dict(checkpoint['lr_scheduler'])
+        # lr_scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer,
+        #                                                 lambda x: 1 if x < len(data_loader) * args.epochs * 0.66 else \
+        #                                                 0.1 if x < len(data_loader) * args.epochs * 0.96 else \
+        #                                                 0.01)
         resume_epoch = checkpoint['epoch']
     else:
         resume_epoch = -999
 
     # SummaryWriter
     writer = None
-    if args.log_dir:
-        utils.mkdir(os.path.join(args.log_dir, '{}_{}_train/'.format(args.model, args.dataset)))
-        writer = SummaryWriter(os.path.join(args.log_dir,
-                                            '{}_{}_train/'.format(args.model, args.dataset)))
+    path = ''
+    if args.resume:
+        path = checkpoint['writer']
+        if path:
+            writer = SummaryWriter(path)
+    elif args.log_dir:
+        path = os.path.join(args.log_dir, '{}_{}_train/{}/'.format(args.model, args.dataset,
+                                 datetime.datetime.now().strftime('%Y-%m-%d_%H:%M')))
+        utils.mkdir(path)
+        writer = SummaryWriter(path)
     
     # TODO --debug training loops 
     for epoch in range(max(0, resume_epoch+1), args.epochs):
         data_loader.sampler.set_epoch(epoch)
         train_one_epoch(model, criterion, optimizer, data_loader, lr_scheduler, epoch, args.print_freq,
                     iterations, args.multimask, writer)
+        data_loader.sampler.dataset.update_last_pred()
+        if epoch > 0:
+            lr_scheduler.step()
 
-        if epoch % 5 == 0:
-            iou, overallIoU = eval_train(model, data_loader_test, epoch, args.multimask, writer)
+        # if epoch % 5 == 0:
+        data_loader_test.sampler.set_epoch(epoch)
+        iou, overallIoU = eval_train(model, data_loader_test, epoch, args.multimask, writer)
 
         print('Average object IoU {}'.format(iou))
         print('Overall IoU {}'.format(overallIoU))
@@ -187,10 +211,12 @@ def main(args):
                             'optimizer': optimizer.state_dict(),
                             'epoch': epoch, 
                             'args': args,
-                            'lr_scheduler': lr_scheduler.state_dict()}
+                            'lr_scheduler': lr_scheduler.state_dict(),
+                            'writer': path,
+                            }
 
             utils.save_on_master(dict_to_save, os.path.join(args.ck_dir,
-                                                            '{}_best_{}.pth'.format(args.model, args.dataset)))
+                                                            '{}_best_{}_{}.pth'.format(args.model, args.dataset, args.splitBy)))
 
             best_oIoU = overallIoU
 

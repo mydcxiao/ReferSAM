@@ -10,7 +10,7 @@ from torch import nn
 
 from typing import Any, Optional, Tuple, Type
 
-# from .common import LayerNorm2d
+from .common import LayerNorm2d
 
 import open_clip
 
@@ -23,29 +23,55 @@ class PromptEncoder(nn.Module):
         embed_dim: int,
         model_name: str,
         pretrained: str,
-        input_dim: int,
+        text_dim: int,
         depth: int,
         image_embedding_size: Tuple[int, int],
-        # activation: Type[nn.Module] = nn.GELU,
+        mask_in_chans: int,
+        activation: Type[nn.Module] = nn.GELU,
     ) -> None:
         super().__init__()
         self.embed_dim = embed_dim
         self.image_embedding_size = image_embedding_size
-        # self.act = activation()
-        # self.layer = nn.Linear(input_dim, embed_dim)
+        # self.layer = nn.Linear(text_dim, embed_dim)
         self.layer = MLP(
-            input_dim, input_dim, self.embed_dim, depth
+            text_dim, text_dim, self.embed_dim, depth
         )
         self.pe_layer = PositionEmbeddingRandom(embed_dim // 2)
-        self.text_model, _, _ = open_clip.create_model_and_transforms(model_name, pretrained=pretrained)
-        self._freeze()
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        x = self.encode_text(x)
-        return self.layer(x)
+        self.mask_input_size = (4 * image_embedding_size[0], 4 * image_embedding_size[1])
+        self.mask_downscaling = nn.Sequential(
+            nn.Conv2d(1, mask_in_chans // 4, kernel_size=2, stride=2),
+            LayerNorm2d(mask_in_chans // 4),
+            activation(),
+            nn.Conv2d(mask_in_chans // 4, mask_in_chans, kernel_size=2, stride=2),
+            LayerNorm2d(mask_in_chans),
+            activation(),
+            nn.Conv2d(mask_in_chans, embed_dim, kernel_size=1),
+        )
+        self.no_mask_embed = nn.Embedding(1, embed_dim)
+
+        self.text_model, _, _ = open_clip.create_model_and_transforms(model_name, pretrained=pretrained)
+        self._freeze_text_model()
+
+    def forward(self, 
+                text: torch.Tensor,
+                masks: Optional[torch.Tensor],
+                ) -> torch.Tensor:
+        bs = text.size(0)
+        text = self._embed_text(text)
+        text_embeddings = self.layer(text)
+
+        if masks is not None:
+            dense_embeddings = self._embed_masks(masks)
+        else:
+            dense_embeddings = self.no_mask_embed.weight.reshape(1, -1, 1, 1).expand(
+                bs, -1, self.image_embedding_size[0], self.image_embedding_size[1]
+            )
+
+        return text_embeddings, dense_embeddings
     
     @torch.cuda.amp.autocast()
-    def encode_text(self, text: torch.Tensor):
+    def _embed_text(self, text: torch.Tensor):
         text = text.squeeze(1)
         x = self.text_model.token_embedding(text)  # [batch_size, n_ctx, d_model]
         x = x + self.text_model.positional_embedding
@@ -61,14 +87,14 @@ class PromptEncoder(nn.Module):
         # text_features = text_encodings
         return text_features
     
-    def _freeze(self):
+    def _freeze_text_model(self):
         self.text_model.eval()
         for p in self.text_model.parameters():
             p.requires_grad = False
     
     def train(self, mode: bool = True):
         super().train(mode)
-        self._freeze()
+        self._freeze_text_model()
         return self
 
     def get_dense_pe(self) -> torch.Tensor:
@@ -81,6 +107,12 @@ class PromptEncoder(nn.Module):
             1x(embed_dim)x(embedding_h)x(embedding_w)
         """
         return self.pe_layer(self.image_embedding_size).unsqueeze(0)
+
+    
+    def _embed_masks(self, masks: torch.Tensor) -> torch.Tensor:
+        """Embeds mask inputs."""
+        mask_embedding = self.mask_downscaling(masks)
+        return mask_embedding
 
 #     def _get_device(self) -> torch.device:
 #         return self.point_embeddings[0].weight.device

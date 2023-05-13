@@ -53,8 +53,8 @@ class Normalize:
     def __init__(self, 
                  pixel_mean: List[float] = [123.675, 116.28, 103.53],
                  pixel_std: List[float] = [58.395, 57.12, 57.375]):
-        self.pixel_mean = np.array(pixel_mean)
-        self.pixel_std = np.array(pixel_std)
+        self.pixel_mean = np.array(pixel_mean).astype(np.float32)
+        self.pixel_std = np.array(pixel_std).astype(np.float32)
     
     def __call__(self, image):
         return self.preprocess(image)
@@ -67,13 +67,13 @@ class Normalize:
 
 class ToTensor:
     def __call__(self, image: np.ndarray):
-        image = torch.as_tensor(image)
+        # image = torch.as_tensor(image)
+        image = torch.from_numpy(image)
         if len(image.shape) == 3:
             # image = image.permute(2, 0, 1).contiguous()[None, :, :, :]
             image = image.permute(2, 0, 1).contiguous()
         else:
             # image = image.unsqueeze(0).contiguous()[None, :, :, :]
-            # image = image.unsqueeze(0).contiguous()
             image = image.contiguous()
         return image # b x c x h x w
     
