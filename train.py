@@ -121,23 +121,25 @@ def main(args):
         single_model.load_state_dict(checkpoint['model'])
 
     # parameters to optimize
-    # TODO layer-wise learning rate decay   
+    # TODO Layer-wise learning rate decay
     # layer_ld = args.layer_ld
     # lr = args.lr
-
-    params = list()
-    # layer_names = list()
-    for name, m in single_model.named_parameters():
-        if 'prompt_encoder.layer' in name or 'prompt_encoder.mask_downscaling' in name or 'prompt_encoder.no_mask_embed' in name or 'mask_decoder' in name:
-            params.append(m)
-
+    
+    no_decay = ["bias", "norm", 'iou_token', 'mask_tokens', 'no_mask_embed', 'positional_embedding', 'pe_layer', 'pos_embed']
+    params = []
+    params_no_decay = []
+    for name, param in single_model.named_parameters():
+        if ('prompt_encoder' in name or 'mask_decoder' in name) \
+        and 'prompt_encoder.text_model' not in name and param.requires_grad:
+            if not any(nd in name for nd in no_decay):
+                params.append(param)
+            else:
+                params_no_decay.append(param)
 
     params_to_optimize = [
-        {'params': params},
-    ]
-
-    # TODO: dropout
-    # TODO: droppath
+        {"params": params, "lr": args.lr},
+        {"params": params_no_decay, "lr": args.lr, "weight_decay": 0.0},
+    ]  
 
     # optimizer
     optimizer = torch.optim.AdamW(params_to_optimize,
@@ -147,16 +149,25 @@ def main(args):
                                   )
 
     # learning rate scheduler
-    lr_scheduler1 = torch.optim.lr_scheduler.LambdaLR(optimizer,
-                                                    #  lambda x: (1 - x / (len(data_loader) * args.epochs)) ** 0.9 \
-                                                     lambda x: x / args.warmup if x < args.warmup else \
-                                                     1 if x < len(data_loader) * args.epochs * 0.66 else \
-                                                     0.1 if x < len(data_loader) * args.epochs * 0.96 else \
-                                                     0.01)
+    # lr_scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer,
+    #                                                 #  lambda x: (1 - x / (len(data_loader) * args.epochs)) ** 0.9 \
+    #                                                  lambda x: x / args.warmup if x < args.warmup else \
+    #                                                  1 if x < len(data_loader) * args.epochs * 0.66 else \
+    #                                                  0.1 if x < len(data_loader) * args.epochs * 0.96 else \
+    #                                                  0.01)
 
-    lr_scheduler2 = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, args.epochs, eta_min=args.lr_min)
+    lr_scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer,
+                                                        lambda x: x / args.warmup if x < args.warmup else \
+                                                        1 - (0.8 ** (x // len(data_loader)) * (1 - 0.8) / (len(data_loader) - args.warmup) * (x - args.warmup)) if x < len(data_loader) else \
+                                                        # 1 - (0.1 ** (x // len(data_loader)) * (1 - 0.1) / len(data_loader) * x))
+                                                        0.8 ** (x // len(data_loader)) - (0.8 ** (x // len(data_loader)) * (1 - 0.8) / len(data_loader) * (x - x // len(data_loader) * len(data_loader))) if x % len(data_loader) != 0 else \
+                                                        0.8 ** (x // len(data_loader))
+                                                    ) 
 
-    lr_scheduler = torch.optim.lr_scheduler.SequentialLR(optimizer, [lr_scheduler1, lr_scheduler2], milestones=[len(data_loader)])
+
+    # lr_scheduler2 = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, args.epochs, eta_min=args.lr_min)
+
+    # lr_scheduler = torch.optim.lr_scheduler.SequentialLR(optimizer, [lr_scheduler1, lr_scheduler2], milestones=[len(data_loader)])
 
     # housekeeping
     start_time = time.time()
@@ -167,11 +178,8 @@ def main(args):
     if args.resume:
         optimizer.load_state_dict(checkpoint['optimizer'])
         lr_scheduler.load_state_dict(checkpoint['lr_scheduler'])
-        # lr_scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer,
-        #                                                 lambda x: 1 if x < len(data_loader) * args.epochs * 0.66 else \
-        #                                                 0.1 if x < len(data_loader) * args.epochs * 0.96 else \
-        #                                                 0.01)
         resume_epoch = checkpoint['epoch']
+        data_loader.dataset.resume(checkpoint['last_pred'])
     else:
         resume_epoch = -999
 
@@ -194,12 +202,10 @@ def main(args):
         train_one_epoch(model, criterion, optimizer, data_loader, lr_scheduler, epoch, args.print_freq,
                     iterations, args.multimask, writer)
         data_loader.sampler.dataset.update_last_pred()
-        if epoch > 0:
-            lr_scheduler.step()
-
+        
         # if epoch % 5 == 0:
         data_loader_test.sampler.set_epoch(epoch)
-        iou, overallIoU = eval_train(model, data_loader_test, epoch, args.multimask, writer)
+        iou, overallIoU = eval_train(model, data_loader_test, epoch, args.multimask, criterion, writer)
 
         print('Average object IoU {}'.format(iou))
         print('Overall IoU {}'.format(overallIoU))
@@ -213,6 +219,7 @@ def main(args):
                             'args': args,
                             'lr_scheduler': lr_scheduler.state_dict(),
                             'writer': path,
+                            'last_pred': data_loader.dataset.last_pred,
                             }
 
             utils.save_on_master(dict_to_save, os.path.join(args.ck_dir,

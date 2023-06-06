@@ -116,6 +116,8 @@ def _build_m(
                 embedding_dim=prompt_embed_dim,
                 mlp_dim=2048,
                 num_heads=8,
+                dropout=0.1,
+                droppath=0.4,
             ),
             transformer_dim=prompt_embed_dim,
             iou_head_depth=3,
@@ -123,23 +125,23 @@ def _build_m(
         ),
     )
     
-    if resume is not None:
+    if resume:
         with open(resume, "rb") as f:
             state_dict = torch.load(f)
         m.load_state_dict(state_dict['model'])
     else:
-        if ck_image_encoder is not None:
+        if ck_image_encoder:
             with open(ck_image_encoder, "rb") as f:
                 state_dict = torch.load(f)
             m.image_encoder.load_state_dict(state_dict)
-        if ck_prompt_encoder is not None:
+        if ck_prompt_encoder:
             with open(ck_prompt_encoder, "rb") as f:
                 state_dict = torch.load(f)
-            m.prompt_encoder.load_state_dict(state_dict)
-        if ck_mask_decoder is not None:
+            m.prompt_encoder.load_state_dict(state_dict, strict=False)
+        if ck_mask_decoder:
             with open(ck_mask_decoder, "rb") as f:
                 state_dict = torch.load(f)
-            m.mask_decoder.load_state_dict(state_dict)
+            m.mask_decoder.load_state_dict(state_dict, strict=False)
     return m
 
 

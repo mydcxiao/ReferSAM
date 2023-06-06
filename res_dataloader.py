@@ -81,6 +81,9 @@ class ReferDataset(data.Dataset):
     def update_last_pred(self):
         self.last_pred = self.curr_pred
         self.curr_pred = dict()
+    
+    def resume(self, pred):
+        self.last_pred = pred
 
     def __len__(self):
         return len(self.ref_ids)

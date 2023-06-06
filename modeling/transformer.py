@@ -1,16 +1,16 @@
-# Copyright (c) Meta Platforms, Inc. and affiliates.
-# All rights reserved.
-
-# This source code is licensed under the license found in the
-# LICENSE file in the root directory of this source tree.
+# add dropout and droppath
 
 import torch
 from torch import Tensor, nn
+
+import torch.nn.functional as F
 
 import math
 from typing import Tuple, Type
 
 from .common import MLPBlock
+
+from timm.models.layers import DropPath, drop_path
 
 
 class TwoWayTransformer(nn.Module):
@@ -22,6 +22,8 @@ class TwoWayTransformer(nn.Module):
         mlp_dim: int,
         activation: Type[nn.Module] = nn.ReLU,
         attention_downsample_rate: int = 2,
+        dropout: float = 0.0,
+        droppath: float = 0.0,
     ) -> None:
         """
         A transformer decoder that attends to an input image using
@@ -42,6 +44,9 @@ class TwoWayTransformer(nn.Module):
         self.mlp_dim = mlp_dim
         self.layers = nn.ModuleList()
 
+        self.dropout = dropout
+        self.droppath = droppath
+
         for i in range(depth):
             self.layers.append(
                 TwoWayAttentionBlock(
@@ -51,11 +56,13 @@ class TwoWayTransformer(nn.Module):
                     activation=activation,
                     attention_downsample_rate=attention_downsample_rate,
                     skip_first_layer_pe=(i == 0),
+                    dropout=dropout,
+                    droppath=droppath,
                 )
             )
 
         self.final_attn_token_to_image = Attention(
-            embedding_dim, num_heads, downsample_rate=attention_downsample_rate
+            embedding_dim, num_heads, downsample_rate=attention_downsample_rate, dropout=dropout
         )
         self.norm_final_attn = nn.LayerNorm(embedding_dim)
 
@@ -95,12 +102,12 @@ class TwoWayTransformer(nn.Module):
                 query_pe=point_embedding,
                 key_pe=image_pe,
             )
-
         # Apply the final attention layer from the points to the image
         q = queries + point_embedding
         k = keys + image_pe
         attn_out = self.final_attn_token_to_image(q=q, k=k, v=keys)
-        queries = queries + attn_out
+        # queries = queries + attn_out
+        queries = drop_path(attn_out, self.droppath, self.training) + queries
         queries = self.norm_final_attn(queries)
 
         return queries, keys
@@ -115,6 +122,8 @@ class TwoWayAttentionBlock(nn.Module):
         activation: Type[nn.Module] = nn.ReLU,
         attention_downsample_rate: int = 2,
         skip_first_layer_pe: bool = False,
+        dropout: float = 0.0,
+        droppath: float = 0.0,
     ) -> None:
         """
         A transformer block with four layers: (1) self-attention of sparse
@@ -130,23 +139,26 @@ class TwoWayAttentionBlock(nn.Module):
           skip_first_layer_pe (bool): skip the PE on the first layer
         """
         super().__init__()
-        self.self_attn = Attention(embedding_dim, num_heads)
+        self.self_attn = Attention(embedding_dim, num_heads, dropout=dropout)
         self.norm1 = nn.LayerNorm(embedding_dim)
 
         self.cross_attn_token_to_image = Attention(
-            embedding_dim, num_heads, downsample_rate=attention_downsample_rate
+            embedding_dim, num_heads, downsample_rate=attention_downsample_rate, dropout=dropout
         )
         self.norm2 = nn.LayerNorm(embedding_dim)
 
-        self.mlp = MLPBlock(embedding_dim, mlp_dim, activation)
+        self.mlp = MLPBlock(embedding_dim, mlp_dim, activation, dropout=dropout)
         self.norm3 = nn.LayerNorm(embedding_dim)
 
         self.norm4 = nn.LayerNorm(embedding_dim)
         self.cross_attn_image_to_token = Attention(
-            embedding_dim, num_heads, downsample_rate=attention_downsample_rate
+            embedding_dim, num_heads, downsample_rate=attention_downsample_rate, dropout=dropout
         )
 
         self.skip_first_layer_pe = skip_first_layer_pe
+
+        self.dropout = dropout
+        self.droppath = droppath
 
     def forward(
         self, queries: Tensor, keys: Tensor, query_pe: Tensor, key_pe: Tensor
@@ -157,26 +169,30 @@ class TwoWayAttentionBlock(nn.Module):
         else:
             q = queries + query_pe
             attn_out = self.self_attn(q=q, k=q, v=queries)
-            queries = queries + attn_out
+            # queries = queries + attn_out
+            queries = drop_path(attn_out, self.droppath, self.training) + queries
         queries = self.norm1(queries)
 
         # Cross attention block, tokens attending to image embedding
         q = queries + query_pe
         k = keys + key_pe
         attn_out = self.cross_attn_token_to_image(q=q, k=k, v=keys)
-        queries = queries + attn_out
+        # queries = queries + attn_out
+        queries = drop_path(attn_out, self.droppath, self.training) + queries
         queries = self.norm2(queries)
 
         # MLP block
         mlp_out = self.mlp(queries)
-        queries = queries + mlp_out
+        # queries = queries + mlp_out
+        queries = drop_path(mlp_out, self.droppath, self.training) + queries
         queries = self.norm3(queries)
 
         # Cross attention block, image embedding attending to tokens
         q = queries + query_pe
         k = keys + key_pe
         attn_out = self.cross_attn_image_to_token(q=k, k=q, v=queries)
-        keys = keys + attn_out
+        # keys = keys + attn_out
+        keys = drop_path(attn_out, self.droppath, self.training) + keys
         keys = self.norm4(keys)
 
         return queries, keys
@@ -193,6 +209,7 @@ class Attention(nn.Module):
         embedding_dim: int,
         num_heads: int,
         downsample_rate: int = 1,
+        dropout: float = 0.0,
     ) -> None:
         super().__init__()
         self.embedding_dim = embedding_dim
@@ -204,6 +221,8 @@ class Attention(nn.Module):
         self.k_proj = nn.Linear(embedding_dim, self.internal_dim)
         self.v_proj = nn.Linear(embedding_dim, self.internal_dim)
         self.out_proj = nn.Linear(self.internal_dim, embedding_dim)
+
+        self.dropout = dropout
 
     def _separate_heads(self, x: Tensor, num_heads: int) -> Tensor:
         b, n, c = x.shape
@@ -231,6 +250,9 @@ class Attention(nn.Module):
         attn = q @ k.permute(0, 1, 3, 2)  # B x N_heads x N_tokens x N_tokens
         attn = attn / math.sqrt(c_per_head)
         attn = torch.softmax(attn, dim=-1)
+        
+        # Dropout
+        attn = F.dropout(attn, p=self.dropout, training=self.training)
 
         # Get output
         out = attn @ v

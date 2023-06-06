@@ -41,9 +41,9 @@ def get_transform(args):
                         T.ToTensor(),
                         T.Pad(args.img_size)
                         ]
-    target_transforms = [T.ResizeLongestSide(args.img_size),
+    target_transforms = [T.ResizeLongestSide(args.img_size // 4),
                          T.ToTensor(),
-                         T.Pad(args.img_size)
+                         T.Pad(args.img_size // 4)
                          ]
     
     return T.Compose(image_transforms), T.Compose(target_transforms)

@@ -29,15 +29,24 @@ class Criterion(nn.Module):
         # upsample predictions to the target size
         num_multimask = src_masks.size(1)
         target_masks = target_masks.flatten(1)
+
+        # alpha = 0.5
+
+        count_pos = target_masks.sum(1)
+        count_neg = (1 - target_masks).sum(1)
+        alpha = torch.where(count_pos > 0, count_neg / (count_pos + count_neg), 0)
+        alpha = alpha.unsqueeze(1)
+
         # wf = self.weight_focal / (self.weight_focal + self.weight_dice)
         # wd = 1 - wf
+
         wf = self.weight_focal
         wd = self.weight_dice
         loss_masks_list = []
         for i in range(num_multimask):
             src_mask = src_masks[:, i, :, :].flatten(1)
             # target_masks = target_masks.view(src_masks.shape)
-            loss_masks_list.append(wf * self.sigmoid_focal_loss(src_mask, target_masks) \
+            loss_masks_list.append(wf * self.sigmoid_focal_loss(src_mask, target_masks, alpha) \
                                   + wd * self.dice_loss(src_mask, target_masks))
         loss_masks_tensor = torch.stack(loss_masks_list, dim=1)
         loss_masks_min, _ = loss_masks_tensor.min(1)
@@ -72,8 +81,10 @@ class Criterion(nn.Module):
                            inputs, 
                            targets, 
                         #    num_masks, 
-                           alpha: float = -1, #0.25, 
-                           gamma: float = 2,
+                        #    alpha: float = 0.25, 
+                           alpha, # (B, 1) or float
+                        #    gamma: float = 1,
+                           gamma: float = 2, 
                            ):
         """
         Loss used in RetinaNet for dense detection: https://arxiv.org/abs/1708.02002.
@@ -95,9 +106,12 @@ class Criterion(nn.Module):
         p_t = prob * targets + (1 - prob) * (1 - targets)
         loss = ce_loss * ((1 - p_t) ** gamma)
 
-        if alpha >= 0:
-            alpha_t = alpha * targets + (1 - alpha) * (1 - targets)
-            loss = alpha_t * loss
+        # if alpha >= 0:
+        #     alpha_t = alpha * targets + (1 - alpha) * (1 - targets)
+        #     loss = alpha_t * loss
+
+        alpha_t = alpha * targets + (1 - alpha) * (1 - targets)
+        loss = alpha_t * loss
 
         # return loss.mean(1).sum() / num_masks
         return loss.mean(1) # (B,)

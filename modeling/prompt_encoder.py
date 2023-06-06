@@ -16,6 +16,8 @@ import open_clip
 
 from torch.nn import functional as F
 
+from timm.models.layers import trunc_normal_
+
 
 class PromptEncoder(nn.Module):
     def __init__(
@@ -32,10 +34,14 @@ class PromptEncoder(nn.Module):
         super().__init__()
         self.embed_dim = embed_dim
         self.image_embedding_size = image_embedding_size
+
         # self.layer = nn.Linear(text_dim, embed_dim)
-        self.layer = MLP(
-            text_dim, text_dim, self.embed_dim, depth
-        )
+        # self.layer = MLP(
+        #     text_dim, text_dim, self.embed_dim, depth
+        # )
+        # self.layer = PositionalLinear(text_dim, self.embed_dim, seq_len=77)
+        self.layer = PositionalLinear(text_dim, self.embed_dim, seq_len=1)
+
         self.pe_layer = PositionEmbeddingRandom(embed_dim // 2)
 
         self.mask_input_size = (4 * image_embedding_size[0], 4 * image_embedding_size[1])
@@ -83,18 +89,25 @@ class PromptEncoder(nn.Module):
         text_embed = x[torch.arange(x.shape[0]), text.argmax(dim=-1)] @ self.text_model.text_projection
         text_embed /= text_embed.norm(dim=-1, keepdim=True)
         text_embed = text_embed.unsqueeze(1)
-        text_features = torch.cat((text_embed, text_encodings), dim=1)
+        # text_features = torch.cat((text_embed, text_encodings), dim=1)
         # text_features = text_encodings
-        return text_features
+        text_features = text_embed
+        return text_features.float()
     
     def _freeze_text_model(self):
         self.text_model.eval()
         for p in self.text_model.parameters():
             p.requires_grad = False
     
+    def _freeze_mask(self):
+        for p in self.mask_downscaling.parameters():
+            p.requires_grad = False
+        self.no_mask_embed.weight.requires_grad = False
+    
     def train(self, mode: bool = True):
         super().train(mode)
         self._freeze_text_model()
+        self._freeze_mask()
         return self
 
     def get_dense_pe(self) -> torch.Tensor:
@@ -163,30 +176,18 @@ class PositionEmbeddingRandom(nn.Module):
         return self._pe_encoding(coords.to(torch.float))  # B x N x C
 
 
-# Lightly adapted from
-# https://github.com/facebookresearch/MaskFormer/blob/main/mask_former/modeling/transformer/transformer_predictor.py # noqa
-class MLP(nn.Module):
-    def __init__(
-        self,
-        input_dim: int,
-        hidden_dim: int,
-        output_dim: int,
-        num_layers: int,
-        sigmoid_output: bool = False,
-    ) -> None:
+class PositionalLinear(nn.Module):
+    def __init__(self, in_features, out_features, seq_len=77, bias=True):
         super().__init__()
-        self.num_layers = num_layers
-        h = [hidden_dim] * (num_layers - 1)
-        self.layers = nn.ModuleList(
-            nn.Linear(n, k) for n, k in zip([input_dim] + h, h + [output_dim])
-        )
-        self.sigmoid_output = sigmoid_output
+        self.linear = nn.Linear(in_features, out_features, bias=bias)
+        self.positional_embedding = nn.Parameter(torch.zeros(1, seq_len, out_features))
+        self.norm = nn.LayerNorm(out_features)
+        trunc_normal_(self.positional_embedding, std=0.02)
 
     def forward(self, x):
-        for i, layer in enumerate(self.layers):
-            x = F.relu(layer(x)) if i < self.num_layers - 1 else layer(x)
-        if self.sigmoid_output:
-            x = F.sigmoid(x)
+        x = self.linear(x)
+        x = x + self.positional_embedding
+        x = self.norm(x)
         return x
 
 # c = PositionEmbeddingRandom(128)

@@ -16,7 +16,8 @@ from .prompt_encoder import PromptEncoder
 
 
 class M(nn.Module):
-    mask_threshold: float = 0.0
+    # mask_threshold: float = 0.0
+    mask_threshold: float = 1.0e-9
     image_format: str = "RGB"
 
     def __init__(
