@@ -347,18 +347,20 @@ def eval_test(model, data_loader, device, multimask, writer=None):
             image, target, sentences = image.to(device), target.to(device), \
                                        sentences.to(device)
             
-            target = target.cpu().data.numpy()
             iterations += 1
 
             for j in range(sentences.size(-1)):
                 low_res_logits, iou_pred = model(image, sentences[:, :, :, j], None, multimask_output=multimask)
                 low_res_masks = torch.where(low_res_logits > 0.0, 1, 0)
-                max_iou_pred, idx = iou_pred.max(1)
+                iou_gt, I, U = computeIoU(low_res_masks, target) # B x C
+                # max_iou_pred, idx = iou_pred.max(1)
+                max_iou_pred, idx = iou_gt.max(1)
                 low_res_masks = low_res_masks[range(len(idx)), idx, :, :]
                 low_res_masks = low_res_masks.cpu().data.numpy()
                 max_iou_pred = max_iou_pred.item()
 
-                I, U = IoU(low_res_masks, target)
+                target_ = target.cpu().data.numpy()
+                I, U = IoU(low_res_masks, target_)
                 this_iou = 0.0 if U == 0 else I*1.0/U
                 mean_IoU.append(this_iou)
                 #----------------------------------------------------
