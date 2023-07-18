@@ -10,7 +10,7 @@ import torchvision.transforms.functional as TF
 import random
 from torch import nn
 
-import h5py
+# import h5py
 from refer.refer import REFER
 
 from args import get_parser
@@ -93,6 +93,8 @@ class ReferDataset(data.Dataset):
         this_img_id = self.refer.getImgIds(this_ref_id)
         this_img = self.refer.Imgs[this_img_id[0]]
 
+        this_sent = self.refer.Refs[this_ref_id]['sentences']
+
         img = Image.open(os.path.join(self.refer.IMAGE_DIR, this_img['file_name'])).convert("RGB")
         img = np.array(img)
 
@@ -136,6 +138,9 @@ class ReferDataset(data.Dataset):
             tensor_embeddings = self.input_ids[index][choice_sent]
             # tensor_embeddings = self.input_ids[index][choice_sent].squeeze(0)
         
+        if self.eval_mode:
+            return img, target.float(), tensor_embeddings, original_size, input_size, original_img, this_sent
+
         if self.last_pred:
             if index in self.last_pred:
                 last_mask = self.last_pred[index]

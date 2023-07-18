@@ -149,13 +149,6 @@ def main(args):
                                   )
 
     # learning rate scheduler
-    # lr_scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer,
-    #                                                 #  lambda x: (1 - x / (len(data_loader) * args.epochs)) ** 0.9 \
-    #                                                  lambda x: x / args.warmup if x < args.warmup else \
-    #                                                  1 if x < len(data_loader) * args.epochs * 0.66 else \
-    #                                                  0.1 if x < len(data_loader) * args.epochs * 0.96 else \
-    #                                                  0.01)
-
     lr_scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer,
                                                         lambda x: x / args.warmup if x < args.warmup else \
                                                         1 - (0.8 ** (x // len(data_loader)) * (1 - 0.8) / (len(data_loader) - args.warmup) * (x - args.warmup)) if x < len(data_loader) else \

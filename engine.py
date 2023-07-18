@@ -8,6 +8,7 @@ from torch import nn
 
 import torchvision
 from torchvision.transforms.functional import resize, to_pil_image 
+from torchvision.transforms import InterpolationMode
 
 from utils import transforms as T
 from utils import utils
@@ -86,7 +87,8 @@ def train_one_epoch(model, criterion, optimizer, data_loader, lr_scheduler,
 
         iou_gt, _, _ = computeIoU(soft_low_res_masks, target)
 
-        _, idx = iou_gt.max(1)
+        # _, idx = iou_gt.max(1)
+        _, idx = iou_pred.max(1)
 
         max_logits = low_res_logits.clone().detach()[range(len(idx)), idx].unsqueeze(1)
 
@@ -239,7 +241,9 @@ def eval_train(model, data_loader, epoch, multimask, criterion,
 
             iou, I, U = computeIoU(low_res_masks, target) # B x C
 
-            iou, idx = iou.max(1)
+            # iou, idx = iou.max(1)
+            _, idx = iou_pred.max(1)
+            iou = iou[range(len(idx)), idx]
             I = I[range(len(idx)), idx]
             U = U[range(len(idx)), idx]
 
@@ -343,7 +347,7 @@ def eval_test(model, data_loader, device, multimask, writer=None):
 
     with torch.no_grad():
         for data in metric_logger.log_every(data_loader, 100, header):
-            image, target, sentences, _, original_size, input_size, original_img = data
+            image, target, sentences, original_size, input_size, original_img, this_sent = data
             image, target, sentences = image.to(device), target.to(device), \
                                        sentences.to(device)
             
@@ -351,11 +355,13 @@ def eval_test(model, data_loader, device, multimask, writer=None):
 
             for j in range(sentences.size(-1)):
                 low_res_logits, iou_pred = model(image, sentences[:, :, :, j], None, multimask_output=multimask)
-                low_res_masks = torch.where(low_res_logits > 0.0, 1, 0)
-                iou_gt, I, U = computeIoU(low_res_masks, target) # B x C
-                # max_iou_pred, idx = iou_pred.max(1)
-                max_iou_pred, idx = iou_gt.max(1)
-                low_res_masks = low_res_masks[range(len(idx)), idx, :, :]
+                low_res_masks = torch.where(low_res_logits > 0.0, 1.0, 0.0)
+                iou_gt, _, _ = computeIoU(low_res_masks, target) # B x C
+                max_iou_pred, idx = iou_pred.max(1)
+                _, idx_gt = iou_gt.max(1)
+                idx_choice = idx
+                all_masks = low_res_masks.cpu().data.numpy()
+                low_res_masks = low_res_masks[range(len(idx_choice)), idx_choice, :, :]
                 low_res_masks = low_res_masks.cpu().data.numpy()
                 max_iou_pred = max_iou_pred.item()
 
@@ -363,27 +369,41 @@ def eval_test(model, data_loader, device, multimask, writer=None):
                 I, U = IoU(low_res_masks, target_)
                 this_iou = 0.0 if U == 0 else I*1.0/U
                 mean_IoU.append(this_iou)
+                sent_id = this_sent[j]['sent_id'].item()
+                sent = this_sent[j]['sent'][0]
                 #----------------------------------------------------
                 # output images in summary writer
-                # if writer is not None:
-                    # img_ndarray = original_img.permute(0,2,3,1).numpy().astype(np.uint8)
-                    # target1 = target.astype(np.uint8)
-                    # target2 = low_res_masks
-                    # target2 = target2.astype(np.uint8)
-                    # for i in range(img_ndarray.shape[0]):
-                    #     img = img_ndarray[i, :, : ,:]
-                    #     mask1 = target1[i]
-                    #     mask2 = target2[i]
-                    #     i_size = input_size[i].tolist()
-                    #     o_size = tuple(original_size[i].tolist())
-                    #     visualization1 = overlay_davis(img, mask1, colors=[[0,0,0],[0,255,0]])
-                    #     visualization2 = overlay_davis(img, mask2)
-                    #     visualization = 0.5 * visualization1 + 0.5 * visualization2
-                    #     visualization = visualization.astype(img.dtype)
-                    #     visualization = visualization[ : i_size[0], : i_size[1], :]
-                    #     visualization = np.array(resize(to_pil_image(visualization), o_size))
-                    #     writer.add_image(f'eval_test/{iterations:d}_{this_iou:.2f}_{max_iou_pred:.2f}', visualization, iterations,
-                    #                     dataformats='HWC')
+                if writer is not None:
+                    img_ndarray = original_img.permute(0,2,3,1).numpy().astype(np.uint8)
+                    target1 = target_.astype(np.uint8)
+                    target2 = low_res_masks
+                    target2 = target2.astype(np.uint8)
+                    all_masks = all_masks.astype(np.uint8)
+                    for i in range(img_ndarray.shape[0]):
+                        img = img_ndarray[i, :, : ,:]
+                        mask1 = target1[i]
+                        mask2 = target2[i]
+                        i_size = input_size[i].int().tolist()
+                        o_size = tuple(original_size[i].int().tolist())
+                        visualization1 = overlay_davis(img, mask1, colors=[[0,0,0],[0,255,0]])
+                        visualization2 = overlay_davis(img, mask2)
+                        visualization = 0.5 * visualization1 + 0.5 * visualization2
+                        visualization = visualization.astype(img.dtype)
+                        visualization = visualization[ : i_size[0], : i_size[1], :]
+                        visualization = np.array(resize(to_pil_image(visualization), o_size))
+                        writer.add_image(f'eval_test/{this_iou:.2f}_{idx_choice.item():d}_{idx.item():d}_{idx_gt.item():d}_{sent}', 
+                            visualization, dataformats='HWC')
+                        vis_list = []
+                        colors_list = [[[0,0,0],[255,0,0]], [[0,0,0],[0,255,0]], [[0,0,0],[0,0,255]]]
+                        for j in range(all_masks.shape[1]):
+                            vis = overlay_davis(img, all_masks[i, j, :, :], colors=colors_list[j])
+                            vis = vis[ : i_size[0], : i_size[1], :]
+                            vis = np.array(resize(to_pil_image(vis), o_size))
+                            vis_list.append(vis)
+                        vis_all = vis_list[0] / 3 + vis_list[1] / 3 + vis_list[2] / 3
+                        vis_all = vis_all.astype(img.dtype)
+                        writer.add_image(f'all_masks/{this_iou:.2f}_{idx_choice.item():d}_{idx.item():d}_{idx_gt.item():d}_{sent}',
+                            vis_all, dataformats='HWC')
                 #----------------------------------------------------
                 cum_I += I
                 cum_U += U
@@ -395,8 +415,8 @@ def eval_test(model, data_loader, device, multimask, writer=None):
                 pred_iou += max_iou_pred
         
             del image, target, sentences, data, \
-                original_size, input_size, original_img, \
-                low_res_logits, iou_pred, low_res_masks, max_iou_pred, idx, I, U, this_iou
+                original_size, input_size, original_img, target_, \
+                low_res_logits, iou_pred, low_res_masks, max_iou_pred, idx, idx_gt, I, U, this_iou
 
         pred_iou = pred_iou / seg_total
 
@@ -442,11 +462,11 @@ def overlay_davis(image, mask, colors=[[0, 0, 0], [255, 0, 0]], cscale=1, alpha=
 
 
 def postprocess_masks(
-        self,
-        masks: torch.Tensor,
-        input_size: Tuple[int, ...],
-        original_size: Tuple[int, ...],
-    ) -> torch.Tensor:
+        model,
+        masks,
+        # input_size: Tuple[int, ...],
+        # original_size: Tuple[int, ...],
+    ):
     """
     Remove padding and upscale masks to the original image size.
 
@@ -462,12 +482,14 @@ def postprocess_masks(
         (torch.Tensor): Batched masks in BxCxHxW format, where (H, W)
         is given by original_size.
         """
-    masks = F.interpolate(
-        masks,
-        (self.image_encoder.img_size, self.image_encoder.img_size),
-        mode="bilinear",
-        align_corners=False,
-    )
-    masks = masks[..., : input_size[0], : input_size[1]]
-    masks = F.interpolate(masks, original_size, mode="bilinear", align_corners=False)
+    # masks = F.interpolate(
+    #     masks,
+    #     (model.image_encoder.img_size, model.image_encoder.img_size),
+    #     mode="nearest",
+        # align_corners=False,
+    # )
+    masks = np.array(resize(to_pil_image(masks), (model.image_encoder.img_size, model.image_encoder.img_size), 
+                     interpolation=InterpolationMode.NEAREST))
+    # masks = masks[..., : input_size[0], : input_size[1]]
+    # masks = F.interpolate(masks, original_size, mode="nearest", align_corners=False)
     return masks

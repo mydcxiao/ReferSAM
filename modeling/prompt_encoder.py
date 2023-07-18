@@ -35,10 +35,6 @@ class PromptEncoder(nn.Module):
         self.embed_dim = embed_dim
         self.image_embedding_size = image_embedding_size
 
-        # self.layer = nn.Linear(text_dim, embed_dim)
-        # self.layer = MLP(
-        #     text_dim, text_dim, self.embed_dim, depth
-        # )
         # self.layer = PositionalLinear(text_dim, self.embed_dim, seq_len=77)
         self.layer = PositionalLinear(text_dim, self.embed_dim, seq_len=1)
 
@@ -166,15 +162,6 @@ class PositionEmbeddingRandom(nn.Module):
         pe = self._pe_encoding(torch.stack([x_embed, y_embed], dim=-1))
         return pe.permute(2, 0, 1)  # C x H x W
 
-    def forward_with_coords(
-        self, coords_input: torch.Tensor, image_size: Tuple[int, int]
-    ) -> torch.Tensor:
-        """Positionally encode points that are not normalized to [0,1]."""
-        coords = coords_input.clone()
-        coords[:, :, 0] = coords[:, :, 0] / image_size[1]
-        coords[:, :, 1] = coords[:, :, 1] / image_size[0]
-        return self._pe_encoding(coords.to(torch.float))  # B x N x C
-
 
 class PositionalLinear(nn.Module):
     def __init__(self, in_features, out_features, seq_len=77, bias=True):
@@ -189,8 +176,3 @@ class PositionalLinear(nn.Module):
         x = x + self.positional_embedding
         x = self.norm(x)
         return x
-
-# c = PositionEmbeddingRandom(128)
-# for params in c.parameters():
-#     print(params.size())
-# print(len(list(c.parameters())))
