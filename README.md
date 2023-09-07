@@ -27,6 +27,13 @@ python test.py --model vit_h --dataset refcoco --split testB --resume ./checkpoi
 ```
 More details, refer to [LAVT](https://github.com/yz93/LAVT-RIS).
 
+## Results
+|     Dataset     | P@0.5 | P@0.6 | P@0.7 | P@0.8 | P@0.9 | Overall IoU | Mean IoU |
+|:---------------:|:-----:|:-----:|:-----:|:-----:|:-----:|:-----------:|:--------:|
+| RefCOCO val     | 79.50 | 74.00 | 67.45 | 55.47 | 22.93 |    64.64    |   71.06  |
+| RefCOCO test A  | 83.03 | 78.20 | 71.68 | 58.60 | 22.38 |    68.61    |   73.35  |
+| RefCOCO test B  | 73.68 | 67.11 | 60.22 | 49.44 | 26.79 |    59.96    |   67.79  |
+
 ## License
 
 This project is under the MIT license. See [LICENSE](LICENSE) for details.
