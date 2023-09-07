@@ -2,7 +2,7 @@
 The official PyTorch implementation of SAM model for refering image segmentation(RIS).
 
 ## Framework
-More details([SAM](https://github.com/facebookresearch/segment-anything) )
+More details([SAM](https://github.com/facebookresearch/segment-anything))
 <p align="center">
   <img src="./referSAM.png" width="1000">
 </p>
