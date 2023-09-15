@@ -25,6 +25,10 @@ Testing
 ```shell
 python test.py --model vit_h --dataset refcoco --split testB --resume ./checkpoints/vit_h_best_refcoco.pth --img_size 1024 --multimask
 ```
+Babysitting
+```shell
+tensorboard --logdir ./logs/vit_h_refcoco_test/ --port 6006
+```
 More details, refer to [LAVT](https://github.com/yz93/LAVT-RIS).
 
 ## Results
